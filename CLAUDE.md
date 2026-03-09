@@ -28,6 +28,78 @@ coo workspace resume ws-1234567890
 coo workspace delete ws-1234567890
 ```
 
+## Runtime Modes
+
+`coo` supports two runtime modes behind the same CLI UX:
+
+### K8s Mode (default when operator is detected)
+
+Uses the itsacoo operator. Creates a `COOWorkspace` CR; the controller handles pod lifecycle, secrets, and CRD-based context injection. Requires:
+- `kubectl` access to a cluster running `code-orchestrator-operator`
+- `coo-claude-api-key` secret in `coo-system` namespace
+
+### Local Mode (`--local` flag, or auto-fallback when no k8s)
+
+Runs the worker image directly via Docker (or Podman). No Kubernetes required — anyone can use this to get a fully containerised Claude Code environment with one command. Requires:
+- Docker or Podman installed
+- `CLAUDE_CODE_OAUTH_TOKEN` in environment (or `~/.claude` OAuth token)
+- `GITHUB_TOKEN` in environment (optional, for private repos)
+
+**Auto-detection logic** (in priority order):
+1. `--local` flag → force local Docker mode
+2. `--context`/`--kubeconfig` flag → force k8s mode
+3. Try to contact k8s API server → if reachable and operator CRD exists → k8s mode
+4. Otherwise → local Docker mode
+
+**Local mode flow for `coo workspace create --repo owner/repo`:**
+```
+docker run -it --rm \
+  -e CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN \
+  -e GITHUB_TOKEN=$GITHUB_TOKEN \
+  -e GIT_REPO=owner/repo \
+  ghcr.io/bobbydeveaux/code-orchestrator-operator/coo-worker-claude:latest
+```
+
+The container entrypoint should:
+1. `git config --global --add safe.directory '*'`
+2. `git clone https://$GITHUB_TOKEN@github.com/$GIT_REPO /workspace` (or `https://` for public repos)
+3. Bootstrap `/tmp/.claude.json` (onboarding complete, workspace trusted) and `/tmp/.claude/settings.json` (skip dangerous mode prompt) — same as k8s mode
+4. `cd /workspace && exec claude --dangerously-skip-permissions`
+
+**Token resolution for local mode** (in priority order):
+1. `--token` flag
+2. `CLAUDE_CODE_OAUTH_TOKEN` env var
+3. `~/.claude/credentials.json` or `~/.config/claude/credentials.json` (existing Claude Code login)
+
+**GitHub token for private repos** (in priority order):
+1. `--github-token` flag
+2. `GITHUB_TOKEN` env var
+3. `GH_TOKEN` env var
+4. `gh auth token` (if `gh` CLI is installed)
+5. Anonymous (public repos only)
+
+**Named workspaces in local mode:**
+Local workspaces are tracked in `~/.coo/workspaces.json`. Each entry stores:
+- container ID
+- workspace name (`ws-<timestamp>`)
+- repo
+- concept (if handoff)
+- created at
+- local volume path (`~/.coo/volumes/<name>`)
+
+This allows `coo workspace list`, `coo workspace exec <name>`, `coo workspace resume <name>`, and `coo workspace delete <name>` to work identically in local mode.
+
+**Volume persistence:** Mount `~/.coo/volumes/<ws-name>` as `/workspace` so work survives container restarts. On `coo workspace create`, do the initial `git clone` into this directory. On subsequent `exec`/`resume`, just re-attach.
+
+```
+docker run -it --rm \
+  -v ~/.coo/volumes/<name>:/workspace \
+  -e CLAUDE_CODE_OAUTH_TOKEN=... \
+  -e GITHUB_TOKEN=... \
+  ghcr.io/bobbydeveaux/code-orchestrator-operator/coo-worker-claude:latest \
+  bash -c 'cd /workspace && claude --dangerously-skip-permissions'
+```
+
 ## Technical Spec — What the Makefile Does Today
 
 The reference implementation is in `code-orchestrator-operator/Makefile` (targets: `workspace`, `workspace-list`, `workspace-exec`, `workspace-resume`, `workspace-delete`) and `code-orchestrator-operator/scripts/build-handoff-context.sh`.
@@ -135,18 +207,23 @@ Key types needed:
 ```
 coo-cli/
 ├── cmd/
-│   └── root.go           # cobra root command, global flags (--kubeconfig, --context, --namespace)
+│   ├── root.go           # cobra root, global flags (--kubeconfig, --context, --namespace, --local)
+│   └── workspace.go      # workspace subcommands
 ├── internal/
+│   ├── runtime/
+│   │   ├── detect.go     # auto-detect k8s vs local mode
+│   │   ├── k8s.go        # k8s runtime: COOWorkspace CR lifecycle
+│   │   └── local.go      # local runtime: docker run, volume management, ~/.coo/workspaces.json
 │   ├── k8s/
 │   │   └── client.go     # kubernetes client setup
 │   ├── workspace/
-│   │   ├── create.go     # workspace create logic
-│   │   ├── list.go       # workspace list logic
-│   │   ├── exec.go       # exec/resume into pod
-│   │   └── delete.go     # workspace delete logic
+│   │   ├── create.go     # workspace create (delegates to runtime)
+│   │   ├── list.go       # workspace list (merges k8s + local)
+│   │   ├── exec.go       # exec/resume into pod or container
+│   │   └── delete.go     # workspace delete
 │   └── handoff/
-│       ├── context.go    # CRD data fetching
-│       └── template.go   # CLAUDE.md rendering
+│       ├── context.go    # CRD data fetching (k8s mode only)
+│       └── template.go   # CLAUDE.md rendering (shared)
 ├── main.go
 ├── go.mod
 ├── CLAUDE.md             # this file
@@ -159,6 +236,7 @@ coo-cli/
 - `k8s.io/client-go` — Kubernetes client
 - `k8s.io/apimachinery` — K8s types
 - `sigs.k8s.io/controller-runtime/pkg/client` — Higher-level client (optional, for unstructured)
+- `github.com/docker/docker/client` — Docker SDK (for local mode container management)
 
 ## Style
 

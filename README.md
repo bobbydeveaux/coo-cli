@@ -6,6 +6,8 @@
 
 `coo` is the command-line interface for **itsacoo** (Code Orchestrator Operator). It replaces the `make workspace *` Makefile targets with a proper developer UX.
 
+**You don't need itsacoo to use `coo workspace`.** If you just want a fully containerised Claude Code environment without installing anything into Kubernetes, `coo` will fall back to running the worker image locally via Docker.
+
 ## Commands
 
 ### Workspace
@@ -52,11 +54,35 @@ go install .
 
 > Homebrew tap and pre-built binaries coming soon.
 
+## Modes
+
+### Local (no Kubernetes required)
+
+Just Docker + a Claude Code OAuth token:
+
+```bash
+export CLAUDE_CODE_OAUTH_TOKEN=<your-token>
+export GITHUB_TOKEN=<your-token>   # optional, for private repos
+
+coo workspace create --repo bobbydeveaux/my-project
+```
+
+`coo` pulls the worker image, clones the repo inside the container, and drops you straight into Claude Code. Your workspace is persisted in `~/.coo/volumes/` so you can resume it later.
+
+### K8s / itsacoo (full operator mode)
+
+When `coo` detects a running itsacoo operator, it automatically uses `COOWorkspace` CRs instead of local Docker. The `--concept` handoff mode (injecting live CRD context) is only available in this mode.
+
+```bash
+coo workspace create --concept my-concept   # handoff with full context
+coo workspace create --local --repo owner/repo  # force local even with k8s available
+```
+
 ## Requirements
 
-- Go 1.22+
-- `kubectl` configured with access to a cluster running the itsacoo operator
-- `CLAUDE_CODE_OAUTH_TOKEN` set as a Kubernetes secret (`coo-claude-api-key`) in the `coo-system` namespace
+- Docker (for local mode) _or_ a cluster running the itsacoo operator (for k8s mode)
+- `CLAUDE_CODE_OAUTH_TOKEN` — your Claude Code OAuth token
+- `GITHUB_TOKEN` (optional) — for cloning private repos
 
 ## Status
 

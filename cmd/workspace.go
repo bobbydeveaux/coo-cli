@@ -85,8 +85,10 @@ var workspaceDeleteCmd = &cobra.Command{
 
 func init() {
 	workspaceCreateCmd.Flags().String("repo", "", "Repository to clone (owner/repo) — freestyle mode")
-	workspaceCreateCmd.Flags().String("concept", "", "COO concept name — handoff mode (auto-detects repo)")
+	workspaceCreateCmd.Flags().String("concept", "", "COO concept name — handoff mode (auto-detects repo, k8s only)")
 	workspaceCreateCmd.Flags().String("model", "claude-sonnet-4-5", "AI model to use")
-	workspaceCreateCmd.Flags().String("ttl", "4h", "Workspace TTL (e.g. 4h, 24h)")
-	workspaceCreateCmd.Flags().String("image", "", "Worker image override")
+	workspaceCreateCmd.Flags().String("ttl", "4h", "Workspace TTL (e.g. 4h, 24h) — k8s mode only")
+	workspaceCreateCmd.Flags().String("image", "", "Worker image override (default: ghcr.io/bobbydeveaux/code-orchestrator-operator/coo-worker-claude:latest)")
+	workspaceCreateCmd.Flags().String("token", "", "Claude Code OAuth token (default: $CLAUDE_CODE_OAUTH_TOKEN)")
+	workspaceCreateCmd.Flags().String("github-token", "", "GitHub token for private repos (default: $GITHUB_TOKEN)")
 }

@@ -7,9 +7,10 @@ import (
 )
 
 var (
-	kubeconfig string
+	kubeconfig  string
 	kubecontext string
-	namespace  string
+	namespace   string
+	localMode   bool
 )
 
 var rootCmd = &cobra.Command{
@@ -36,6 +37,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig (default: $KUBECONFIG or ~/.kube/config)")
 	rootCmd.PersistentFlags().StringVar(&kubecontext, "context", "", "Kubernetes context to use")
 	rootCmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "coo-system", "Namespace where the COO operator is installed")
+	rootCmd.PersistentFlags().BoolVar(&localMode, "local", false, "Force local Docker mode (skip k8s auto-detection)")
 
 	rootCmd.AddCommand(workspaceCmd)
 }
