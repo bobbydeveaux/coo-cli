@@ -1,0 +1,21 @@
+GeneratedAt: "2026-03-09T22:36:44Z"
+Issues:
+- IssueNumber: 2
+  IssueURL: https://github.com/bobbydeveaux/coo-cli/issues/2
+  TaskID: task-coo-cli-workspace-feat-k8s-client-1
+- IssueNumber: 3
+  IssueURL: https://github.com/bobbydeveaux/coo-cli/issues/3
+  TaskID: task-coo-cli-workspace-feat-runtime-detection-1
+- IssueNumber: 4
+  IssueURL: https://github.com/bobbydeveaux/coo-cli/issues/4
+  TaskID: task-coo-cli-workspace-feat-k8s-workspace-create-1
+- IssueNumber: 5
+  IssueURL: https://github.com/bobbydeveaux/coo-cli/issues/5
+  TaskID: task-coo-cli-workspace-feat-k8s-workspace-create-2
+- IssueNumber: 6
+  IssueURL: https://github.com/bobbydeveaux/coo-cli/issues/6
+  TaskID: task-coo-cli-workspace-feat-k8s-workspace-create-3
+- IssueNumber: 7
+  IssueURL: https://github.com/bobbydeveaux/coo-cli/issues/7
+  TaskID: task-coo-cli-workspace-feat-local-state-1
+Plan: coo-cli-workspace-plan
