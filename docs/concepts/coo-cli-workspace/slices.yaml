@@ -1,0 +1,47 @@
+# Sprint Slices (Horizontal Decomposition)
+
+sprints:
+  - number: 1
+    features:
+      - id: coo-cli-workspace-feat-k8s-client
+        name: Kubernetes Client Setup
+        type: enabler
+        files: [internal/k8s/client.go]
+      - id: coo-cli-workspace-feat-runtime-detection
+        name: Runtime Mode Detection
+        type: enabler
+        files: [internal/runtime/detect.go]
+  - number: 2
+    features:
+      - id: coo-cli-workspace-feat-k8s-workspace-create
+        name: K8s Workspace Create
+        type: feature
+        files: [internal/runtime/k8s.go internal/workspace/create.go]
+      - id: coo-cli-workspace-feat-local-state
+        name: Local Workspace State Management
+        type: enabler
+        files: [internal/runtime/local.go]
+  - number: 3
+    features:
+      - id: coo-cli-workspace-feat-k8s-workspace-lifecycle
+        name: K8s Workspace List/Exec/Resume/Delete
+        type: feature
+        files: [internal/runtime/k8s.go internal/workspace/list.go internal/workspace/exec.go internal/workspace/delete.go]
+      - id: coo-cli-workspace-feat-local-workspace-create
+        name: Local Workspace Create
+        type: feature
+        files: [internal/runtime/local.go internal/workspace/create.go]
+  - number: 4
+    features:
+      - id: coo-cli-workspace-feat-local-workspace-lifecycle
+        name: Local Workspace List/Exec/Resume/Delete
+        type: feature
+        files: [internal/runtime/local.go internal/workspace/list.go internal/workspace/exec.go internal/workspace/delete.go]
+      - id: coo-cli-workspace-feat-handoff-injection
+        name: Handoff CLAUDE.md Context Injection
+        type: feature
+        files: [internal/handoff/context.go internal/handoff/template.go]
+      - id: coo-cli-workspace-feat-cli-commands
+        name: Wire Up Workspace Cobra Commands
+        type: feature
+        files: [cmd/workspace.go cmd/root.go]

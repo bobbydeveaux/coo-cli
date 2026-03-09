@@ -1,6 +1,7 @@
 Epics:
-- features:
-  - dependencies: []
+- Features:
+  - Sprint: 1
+    dependencies: null
     description: 'Implement internal/k8s/client.go: kubeconfig loading (KUBECONFIG
       env, ~/.kube/config, --kubeconfig/--context flags), dynamic client construction,
       REST config, and lightweight CRD existence probe with 5s timeout for mode detection.'
@@ -11,7 +12,8 @@ Epics:
     name: Kubernetes Client Setup
     project: coo-cli
     type: enabler
-  - dependencies:
+  - Sprint: 1
+    dependencies:
     - coo-cli-workspace-feat-k8s-client
     description: 'Implement internal/runtime/detect.go: resolve k8s vs local mode
       in priority order (--local flag → --context/--kubeconfig flag → k8s API probe
@@ -25,10 +27,11 @@ Epics:
     name: Runtime Mode Detection
     project: coo-cli
     type: enabler
-  id: coo-cli-workspace-epic-infrastructure
-  name: Core Infrastructure
-- features:
-  - dependencies:
+  ID: coo-cli-workspace-epic-infrastructure
+  Name: Core Infrastructure
+- Features:
+  - Sprint: 2
+    dependencies:
     - coo-cli-workspace-feat-k8s-client
     - coo-cli-workspace-feat-runtime-detection
     description: 'Implement COOWorkspace CR creation in internal/runtime/k8s.go: check
@@ -46,7 +49,8 @@ Epics:
     name: K8s Workspace Create
     project: coo-cli
     type: feature
-  - dependencies:
+  - Sprint: 3
+    dependencies:
     - coo-cli-workspace-feat-k8s-workspace-create
     description: 'Implement remaining k8s runtime operations in internal/runtime/k8s.go:
       List (query all COOWorkspaces in coo-system, return WorkspaceInfo slice), Exec
@@ -64,10 +68,11 @@ Epics:
     name: K8s Workspace List/Exec/Resume/Delete
     project: coo-cli
     type: feature
-  id: coo-cli-workspace-epic-k8s-runtime
-  name: K8s Workspace Runtime
-- features:
-  - dependencies:
+  ID: coo-cli-workspace-epic-k8s-runtime
+  Name: K8s Workspace Runtime
+- Features:
+  - Sprint: 2
+    dependencies:
     - coo-cli-workspace-feat-runtime-detection
     description: 'Implement ~/.coo/workspaces.json read/write in internal/runtime/local.go:
       define WorkspaceEntry struct (name, containerID, repo, concept, createdAt, volumePath),
@@ -83,7 +88,8 @@ Epics:
     name: Local Workspace State Management
     project: coo-cli
     type: enabler
-  - dependencies:
+  - Sprint: 3
+    dependencies:
     - coo-cli-workspace-feat-local-state
     description: 'Implement local Docker workspace creation: git clone repo into ~/.coo/volumes/<ws-name>/
       on host, write /tmp/.claude.json bootstrap (onboarding complete, workspace trusted,
@@ -100,7 +106,8 @@ Epics:
     name: Local Workspace Create
     project: coo-cli
     type: feature
-  - dependencies:
+  - Sprint: 4
+    dependencies:
     - coo-cli-workspace-feat-local-workspace-create
     description: 'Implement remaining local runtime operations: List (read workspaces.json,
       query Docker for container status, return WorkspaceInfo), Exec (docker exec
@@ -118,10 +125,11 @@ Epics:
     name: Local Workspace List/Exec/Resume/Delete
     project: coo-cli
     type: feature
-  id: coo-cli-workspace-epic-local-runtime
-  name: Local Docker Runtime
-- features:
-  - dependencies:
+  ID: coo-cli-workspace-epic-local-runtime
+  Name: Local Docker Runtime
+- Features:
+  - Sprint: 4
+    dependencies:
     - coo-cli-workspace-feat-k8s-workspace-create
     description: 'Implement internal/handoff/context.go: use k8s dynamic client to
       fetch COOConcept, COOPlan, COOSprints, COOFeatures, COOTasks, COOWorkers from
@@ -140,10 +148,11 @@ Epics:
     name: Handoff CLAUDE.md Context Injection
     project: coo-cli
     type: feature
-  id: coo-cli-workspace-epic-handoff
-  name: Handoff Context Injection
-- features:
-  - dependencies:
+  ID: coo-cli-workspace-epic-handoff
+  Name: Handoff Context Injection
+- Features:
+  - Sprint: 4
+    dependencies:
     - coo-cli-workspace-feat-k8s-workspace-lifecycle
     - coo-cli-workspace-feat-local-workspace-lifecycle
     - coo-cli-workspace-feat-handoff-injection
@@ -162,6 +171,6 @@ Epics:
     name: Wire Up Workspace Cobra Commands
     project: coo-cli
     type: feature
-  id: coo-cli-workspace-epic-cli
-  name: CLI Command Wiring
+  ID: coo-cli-workspace-epic-cli
+  Name: CLI Command Wiring
 Version: v1alpha1
