@@ -1,0 +1,135 @@
+GeneratedAt: "2026-03-09T22:36:25Z"
+Plan: coo-cli-workspace-plan
+Sprints:
+- Features:
+  - FeatureID: coo-cli-workspace-feat-k8s-client
+    FeatureTitle: Kubernetes Client Setup
+    Tasks:
+    - AcceptanceCriteria:
+      - NewClient() accepts kubeconfig path and context overrides, falling back to
+        KUBECONFIG env and ~/.kube/config
+      - CRDExists() probes for the COOWorkspace CRD with a 5s timeout and returns
+        a boolean without error-propagating on not-found
+      - go build ./internal/k8s/... succeeds with no vet warnings
+      - Unit test with a fake REST server confirms timeout behaviour and kubeconfig
+        resolution priority
+      AgentType: backend-engineer
+      Dependencies: []
+      Description: Implement internal/k8s/client.go with kubeconfig loading (KUBECONFIG
+        env, ~/.kube/config, --kubeconfig/--context flags), dynamic client construction
+        from REST config, and a lightweight CRD existence probe with 5s timeout used
+        by the mode detection logic.
+      EstimatedEffort: S
+      Files:
+      - internal/k8s/client.go
+      ID: task-coo-cli-workspace-feat-k8s-client-1
+      Title: Implement Kubernetes client setup with kubeconfig loading and CRD probe
+  - FeatureID: coo-cli-workspace-feat-runtime-detection
+    FeatureTitle: Runtime Mode Detection
+    Tasks:
+    - AcceptanceCriteria:
+      - Resolve() returns LocalRuntime when --local is set, regardless of k8s availability
+      - Resolve() returns K8sRuntime when --context or --kubeconfig flags are explicitly
+        provided
+      - Resolve() probes k8s API and checks for COOWorkspace CRD, falling back to
+        LocalRuntime if unreachable
+      - Container binary detection tries docker, podman, nerdctl in order and surfaces
+        an error if none found
+      AgentType: backend-engineer
+      Dependencies: []
+      Description: 'Create internal/runtime/detect.go implementing the Runtime interface
+        and Resolve(flags) function. Priority order: --local flag → --context/--kubeconfig
+        flag → k8s API probe + COOWorkspace CRD existence check → local fallback.
+        Detect container binary (docker, podman, nerdctl) via exec.LookPath and expose
+        it on the resolved runtime.'
+      EstimatedEffort: S
+      Files:
+      - internal/runtime/detect.go
+      ID: task-coo-cli-workspace-feat-runtime-detection-1
+      Title: Implement internal/runtime/detect.go with Runtime interface and resolution
+        logic
+  Sprint: 1
+- Features:
+  - FeatureID: coo-cli-workspace-feat-k8s-workspace-create
+    FeatureTitle: K8s Workspace Create
+    Tasks:
+    - AcceptanceCriteria:
+      - ListWorkspaces returns only workspaces with non-Terminated phase
+      - Prompt is skipped when no existing workspaces exist
+      - Selecting an existing workspace execs into it with the correct --resume flag
+      - Pressing Enter with no selection proceeds to create a new workspace
+      AgentType: backend-engineer
+      Dependencies: []
+      Description: Implement ListWorkspaces in internal/runtime/k8s.go to fetch non-Terminated
+        COOWorkspaces from coo-system. Render an interactive prompt listing existing
+        workspaces; if the user selects one, resolve the pod name from status.podName
+        and find the last session ID from /tmp/.claude/projects/*/*.jsonl via exec
+        API, then exec into the pod with --resume <id>.
+      EstimatedEffort: M
+      Files:
+      - internal/runtime/k8s.go
+      ID: task-coo-cli-workspace-feat-k8s-workspace-create-1
+      Title: List existing workspaces and prompt to resume
+    - AcceptanceCriteria:
+      - CR is created with all required spec fields populated from caller-supplied
+        options
+      - Polling exits immediately when status.phase == Ready
+      - Timeout after 120s returns a user-friendly error
+      - Progress indicator updates every poll cycle and clears on completion
+      AgentType: backend-engineer
+      Dependencies:
+      - task-coo-cli-workspace-feat-k8s-workspace-create-1
+      Description: 'Implement CreateWorkspace in internal/runtime/k8s.go: generate
+        ws-<unix-timestamp> name, construct and apply the COOWorkspace CR with spec
+        fields (mode, repo, conceptRef, model, ttl, image), then poll status.phase
+        at 2-second intervals up to 120s showing a spinner progress indicator. Return
+        error with a clear message on timeout.'
+      EstimatedEffort: M
+      Files:
+      - internal/runtime/k8s.go
+      ID: task-coo-cli-workspace-feat-k8s-workspace-create-2
+      Title: Create COOWorkspace CR and poll for readiness
+    - AcceptanceCriteria:
+      - coo workspace create --repo owner/repo creates a workspace and drops into
+        Claude Code
+      - coo workspace create --concept <name> uses handoff mode
+      - Resume hint is printed after the exec session ends (including on error exit)
+      - Missing required flags produce a clear usage error without a stack trace
+      AgentType: backend-engineer
+      Dependencies:
+      - task-coo-cli-workspace-feat-k8s-workspace-create-2
+      Description: 'Implement the create flow in internal/workspace/create.go: parse
+        --repo/--concept/--model/--ttl/--image flags, call the k8s runtime (or local
+        runtime based on detection), exec -c workspace with bash -c ''git config --global
+        --add safe.directory "*" && cd /workspace && claude --dangerously-skip-permissions'',
+        and print ''Resume this session: coo workspace resume <name>'' on exit.'
+      EstimatedEffort: S
+      Files:
+      - internal/workspace/create.go
+      ID: task-coo-cli-workspace-feat-k8s-workspace-create-3
+      Title: 'Wire create command: exec into pod and print resume hint'
+  - FeatureID: coo-cli-workspace-feat-local-state
+    FeatureTitle: Local Workspace State Management
+    Tasks:
+    - AcceptanceCriteria:
+      - WorkspaceEntry struct has all required fields (name, containerID, repo, concept,
+        createdAt, volumePath)
+      - Atomic write creates temp file and renames atomically; file permissions are
+        0600 for workspaces.json and 0700 for ~/.coo/ and ~/.coo/volumes/
+      - Claude token resolution returns first non-empty value in priority order, including
+        parsing credentials.json
+      - GitHub token resolution falls back to 'gh auth token' subprocess and returns
+        empty string (not error) for anonymous
+      AgentType: backend-engineer
+      Dependencies: []
+      Description: 'Implement WorkspaceEntry struct, ~/.coo/ directory setup (mode
+        0700), atomic JSON read/write for ~/.coo/workspaces.json (mode 0600 via os.CreateTemp+os.Rename),
+        and both token resolution chains: Claude token (--token flag → CLAUDE_CODE_OAUTH_TOKEN
+        → ~/.claude/credentials.json → ~/.config/claude/credentials.json) and GitHub
+        token (--github-token → GITHUB_TOKEN → GH_TOKEN → gh auth token → anonymous).'
+      EstimatedEffort: M
+      Files:
+      - internal/runtime/local.go
+      ID: task-coo-cli-workspace-feat-local-state-1
+      Title: Implement local workspace state and token resolution
+  Sprint: 2
