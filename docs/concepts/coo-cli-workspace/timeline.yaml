@@ -1,0 +1,62 @@
+# Project Timeline
+
+metadata:
+  generated: 2026-03-09T22:35:25Z
+  totalSprints: 4
+  totalDuration: 31 days
+
+sprints:
+  - number: 2
+    startDate: 2026-03-09
+    endDate: 2026-03-16
+    duration: 7 days
+    features:
+      - id: coo-cli-workspace-feat-k8s-workspace-create
+        name: K8s Workspace Create
+        type: feature
+      - id: coo-cli-workspace-feat-local-state
+        name: Local Workspace State Management
+        type: enabler
+  - number: 3
+    startDate: 2026-03-17
+    endDate: 2026-03-24
+    duration: 7 days
+    features:
+      - id: coo-cli-workspace-feat-k8s-workspace-lifecycle
+        name: K8s Workspace List/Exec/Resume/Delete
+        type: feature
+      - id: coo-cli-workspace-feat-local-workspace-create
+        name: Local Workspace Create
+        type: feature
+  - number: 4
+    startDate: 2026-03-25
+    endDate: 2026-04-01
+    duration: 7 days
+    features:
+      - id: coo-cli-workspace-feat-local-workspace-lifecycle
+        name: Local Workspace List/Exec/Resume/Delete
+        type: feature
+      - id: coo-cli-workspace-feat-handoff-injection
+        name: Handoff CLAUDE.md Context Injection
+        type: feature
+      - id: coo-cli-workspace-feat-cli-commands
+        name: Wire Up Workspace Cobra Commands
+        type: feature
+  - number: 1
+    startDate: 2026-04-02
+    endDate: 2026-04-09
+    duration: 7 days
+    features:
+      - id: coo-cli-workspace-feat-k8s-client
+        name: Kubernetes Client Setup
+        type: enabler
+      - id: coo-cli-workspace-feat-runtime-detection
+        name: Runtime Mode Detection
+        type: enabler
+
+criticalPath:
+  - coo-cli-workspace-feat-runtime-detection
+  - coo-cli-workspace-feat-local-state
+  - coo-cli-workspace-feat-local-workspace-create
+  - coo-cli-workspace-feat-local-workspace-lifecycle
+  - coo-cli-workspace-feat-cli-commands
