@@ -1,0 +1,19 @@
+{
+  "prTitle": "feat: wire workspace create command with k8s runtime exec and resume hint",
+  "prBody": "## Summary\n\n- **`internal/workspace/create.go`** (new): orchestration layer for `coo workspace create` — detects runtime, prompts to resume existing non-terminated workspaces, creates a new `COOWorkspace` CR, execs into it with Claude Code, and always prints a `Resume this session: coo workspace resume <name>` hint on exit (via `defer`)\n- **`internal/runtime/k8s.go`**: full implementation of `ListWorkspaces`, `CreateWorkspace` (generates `ws-<unix-timestamp>` name, creates CR, polls `status.phase` every 2s up to 120s with a spinner), `ExecWorkspace` (SPDY TTY exec into `-c workspace` container), `ResumeWorkspace` (discovers last session ID via exec then resumes with `--resume <id>`), and `DeleteWorkspace`\n- **`internal/runtime/detect.go`**: `CreateWorkspace` interface updated to return `(string, error)` so the caller gets the workspace name for the exec step\n- **`internal/k8s/client.go`**: added `kubernetes.Interface` (`Clientset`) field; used by the exec API (`RESTClient().Post().SubResource(\"exec\")`) in the runtime\n- **`cmd/workspace.go`**: `workspaceCreateCmd.RunE` now calls `workspace.Create()`; added `MarkFlagsOneRequired` + `MarkFlagsMutuallyExclusive` for `--repo`/`--concept` so missing/conflicting flags produce a clean error without a stack trace\n- Unit tests added for the `isRemoteExitError` helper and the workspace create orchestration flow\n\n**Note:** `go mod tidy` may show `k8s.io/api` should be promoted from indirect to direct (cosmetic only; no build impact).\n\nCloses #6",
+  "testsPass": true,
+  "filesChanged": [
+    "cmd/workspace.go",
+    "internal/k8s/client.go",
+    "internal/k8s/client_test.go",
+    "internal/runtime/detect.go",
+    "internal/runtime/k8s.go",
+    "internal/runtime/k8s_test.go",
+    "internal/runtime/local.go",
+    "internal/workspace/create.go",
+    "internal/workspace/create_test.go"
+  ],
+  "docsUpdated": [],
+  "docsReviewed": ["README.md", "docs/concepts/coo-cli-workspace/LLD.md", "docs/concepts/coo-cli-workspace/PRD.md"],
+  "completedTasks": [1, 2, 3]
+}

@@ -255,7 +255,7 @@ func TestWaitForReady_FailedPhase(t *testing.T) {
 // TestCreateWorkspace_MissingRepoAndConcept verifies validation.
 func TestCreateWorkspace_MissingRepoAndConcept(t *testing.T) {
 	rt := &K8sRuntime{namespace: defaultNamespace}
-	err := rt.CreateWorkspace(context.Background(), CreateOptions{})
+	_, err := rt.CreateWorkspace(context.Background(), CreateOptions{})
 	if err == nil {
 		t.Fatal("expected error when neither --repo nor --concept is provided")
 	}
