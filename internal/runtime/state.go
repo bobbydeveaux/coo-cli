@@ -17,6 +17,8 @@ type WorkspaceEntry struct {
 	Concept     string    `json:"concept,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
 	VolumePath  string    `json:"volumePath"`
+	Phase       string    `json:"phase,omitempty"`
+	Image       string    `json:"image,omitempty"`
 }
 
 // cooDir returns the path to the ~/.coo directory.
