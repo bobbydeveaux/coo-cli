@@ -1,6 +1,12 @@
 package cmd
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"text/tabwriter"
+
+	"github.com/bobbydeveaux/coo-cli/internal/runtime"
 	"github.com/bobbydeveaux/coo-cli/internal/workspace"
 	"github.com/spf13/cobra"
 )
@@ -63,11 +69,30 @@ var workspaceListCmd = &cobra.Command{
 	Use:     "list",
 	Short:   "List active workspaces",
 	Aliases: []string{"ls"},
-	RunE: func(cmd *cobra.Command, args []string) error {
-		// TODO: implement
-		cmd.Println("workspace list — not yet implemented")
+	RunE:    runWorkspaceList,
+}
+
+// runWorkspaceList implements the workspace list command.
+func runWorkspaceList(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	rt, err := detectRuntime(ctx)
+	if err != nil {
+		return err
+	}
+
+	workspaces, err := rt.ListWorkspaces(ctx)
+	if err != nil {
+		return fmt.Errorf("list workspaces: %w", err)
+	}
+
+	if len(workspaces) == 0 {
+		fmt.Println("No active workspaces.")
 		return nil
-	},
+	}
+
+	printWorkspacesTable(workspaces)
+	return nil
 }
 
 var workspaceExecCmd = &cobra.Command{
@@ -116,4 +141,30 @@ func init() {
 	// Exactly one of --repo or --concept must be provided.
 	workspaceCreateCmd.MarkFlagsOneRequired("repo", "concept")
 	workspaceCreateCmd.MarkFlagsMutuallyExclusive("repo", "concept")
+}
+
+// detectRuntime builds the runtime.Config from global flags and calls runtime.Detect.
+func detectRuntime(ctx context.Context) (runtime.Runtime, error) {
+	cfg := runtime.Config{
+		LocalMode:   localMode,
+		Kubeconfig:  kubeconfig,
+		KubeContext: kubecontext,
+		Namespace:   namespace,
+	}
+	rt, err := runtime.Detect(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("detect runtime: %w", err)
+	}
+	return rt, nil
+}
+
+// printWorkspacesTable writes a formatted table of workspaces to stdout.
+func printWorkspacesTable(workspaces []runtime.WorkspaceInfo) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "NAME\tMODE\tPHASE\tPOD\tTTL\tREPO")
+	for _, ws := range workspaces {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			ws.Name, ws.Mode, ws.Phase, ws.PodName, ws.TTLExpiry, ws.Repo)
+	}
+	w.Flush()
 }

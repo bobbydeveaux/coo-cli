@@ -48,7 +48,7 @@ type K8sRuntime struct {
 func newK8sRuntime(ctx context.Context, cfg Config) (*K8sRuntime, error) {
 	dc, err := buildDiscoveryClient(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("build k8s discovery client: %w", err)
+		return nil, fmt.Errorf("build k8s clients: %w", err)
 	}
 
 	if err := probeCOOCRD(dc); err != nil {
@@ -98,7 +98,12 @@ func buildDiscoveryClient(cfg Config) (discovery.DiscoveryInterface, error) {
 	// Short timeout so auto-detection fails fast when no cluster is present.
 	restCfg.Timeout = k8sProbeTimeout
 
-	return discovery.NewDiscoveryClientForConfig(restCfg)
+	dc, err := discovery.NewDiscoveryClientForConfig(restCfg)
+	if err != nil {
+		return nil, fmt.Errorf("create discovery client: %w", err)
+	}
+
+	return dc, nil
 }
 
 // buildRuntimeClients constructs a dynamic client and REST config for runtime
