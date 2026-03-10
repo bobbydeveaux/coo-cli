@@ -83,8 +83,8 @@ func (r *LocalRuntime) ListWorkspaces(ctx context.Context) ([]WorkspaceInfo, err
 }
 
 // CreateWorkspace implements Runtime.
-func (r *LocalRuntime) CreateWorkspace(ctx context.Context, opts CreateOptions) error {
-	return fmt.Errorf("local CreateWorkspace: not yet implemented")
+func (r *LocalRuntime) CreateWorkspace(ctx context.Context, opts CreateOptions) (string, error) {
+	return "", fmt.Errorf("local CreateWorkspace: not yet implemented")
 }
 
 // ExecWorkspace implements Runtime.

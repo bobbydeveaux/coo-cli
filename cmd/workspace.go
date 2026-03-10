@@ -1,14 +1,13 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"text/tabwriter"
 
 	"github.com/bobbydeveaux/coo-cli/internal/runtime"
+	"github.com/bobbydeveaux/coo-cli/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -39,87 +38,31 @@ COO context injected into the workspace CLAUDE.md.`,
 
   # Handoff — auto-detects repo from COOConcept
   coo workspace create --concept my-concept`,
-	RunE: runWorkspaceCreate,
-}
+	SilenceUsage: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		repo, _ := cmd.Flags().GetString("repo")
+		concept, _ := cmd.Flags().GetString("concept")
+		model, _ := cmd.Flags().GetString("model")
+		ttl, _ := cmd.Flags().GetString("ttl")
+		image, _ := cmd.Flags().GetString("image")
+		token, _ := cmd.Flags().GetString("token")
+		githubToken, _ := cmd.Flags().GetString("github-token")
 
-// runWorkspaceCreate implements the workspace create command.
-// It lists existing workspaces and prompts the user to resume one before
-// proceeding with creating a new workspace.
-func runWorkspaceCreate(cmd *cobra.Command, args []string) error {
-	ctx := context.Background()
+		return workspace.Create(cmd.Context(), workspace.CreateConfig{
+			Kubeconfig:  kubeconfig,
+			KubeContext: kubecontext,
+			Namespace:   namespace,
+			LocalMode:   localMode,
 
-	rt, err := detectRuntime(ctx)
-	if err != nil {
-		return err
-	}
-
-	// Step 1: List existing non-terminated workspaces.
-	existing, err := rt.ListWorkspaces(ctx)
-	if err != nil {
-		// Non-fatal — if listing fails, proceed with create.
-		fmt.Fprintf(os.Stderr, "Warning: could not list existing workspaces: %v\n", err)
-		existing = nil
-	}
-
-	// Step 2: If there are existing workspaces, prompt the user.
-	if len(existing) > 0 {
-		fmt.Println("Existing workspaces:")
-		printWorkspacesTable(existing)
-		fmt.Println()
-		fmt.Print("Enter a workspace name to resume it, or press Enter to create a new one: ")
-
-		reader := bufio.NewReader(os.Stdin)
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return fmt.Errorf("read input: %w", err)
-		}
-		name := strings.TrimSpace(line)
-
-		if name != "" {
-			// Validate that the entered name exists.
-			for _, ws := range existing {
-				if ws.Name == name {
-					fmt.Printf("Resuming workspace %s...\n", name)
-					if err := rt.ResumeWorkspace(ctx, name); err != nil {
-						return fmt.Errorf("resume workspace %s: %w", name, err)
-					}
-					fmt.Printf("Resume this session: coo workspace resume %s\n", name)
-					return nil
-				}
-			}
-			return fmt.Errorf("workspace %q not found; run 'coo workspace list' to see available workspaces", name)
-		}
-		// Empty input: fall through to create a new workspace.
-		fmt.Println("Creating new workspace...")
-	}
-
-	// Step 3: Gather create options from flags.
-	repo, _ := cmd.Flags().GetString("repo")
-	concept, _ := cmd.Flags().GetString("concept")
-	model, _ := cmd.Flags().GetString("model")
-	ttl, _ := cmd.Flags().GetString("ttl")
-	image, _ := cmd.Flags().GetString("image")
-	token, _ := cmd.Flags().GetString("token")
-	githubToken, _ := cmd.Flags().GetString("github-token")
-
-	if repo == "" && concept == "" {
-		return fmt.Errorf("one of --repo or --concept is required")
-	}
-
-	opts := runtime.CreateOptions{
-		Repo:        repo,
-		Concept:     concept,
-		Model:       model,
-		TTL:         ttl,
-		Image:       image,
-		Token:       token,
-		GithubToken: githubToken,
-	}
-
-	if err := rt.CreateWorkspace(ctx, opts); err != nil {
-		return err
-	}
-	return nil
+			Repo:        repo,
+			Concept:     concept,
+			Model:       model,
+			TTL:         ttl,
+			Image:       image,
+			Token:       token,
+			GithubToken: githubToken,
+		})
+	},
 }
 
 var workspaceListCmd = &cobra.Command{
@@ -194,6 +137,10 @@ func init() {
 	workspaceCreateCmd.Flags().String("image", "", "Worker image override (default: ghcr.io/bobbydeveaux/code-orchestrator-operator/coo-worker-claude:latest)")
 	workspaceCreateCmd.Flags().String("token", "", "Claude Code OAuth token (default: $CLAUDE_CODE_OAUTH_TOKEN)")
 	workspaceCreateCmd.Flags().String("github-token", "", "GitHub token for private repos (default: $GITHUB_TOKEN)")
+
+	// Exactly one of --repo or --concept must be provided.
+	workspaceCreateCmd.MarkFlagsOneRequired("repo", "concept")
+	workspaceCreateCmd.MarkFlagsMutuallyExclusive("repo", "concept")
 }
 
 // detectRuntime builds the runtime.Config from global flags and calls runtime.Detect.
