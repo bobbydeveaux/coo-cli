@@ -15,6 +15,8 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+
+	"github.com/bobbydeveaux/coo-cli/internal/handoff"
 )
 
 const (
@@ -219,11 +221,43 @@ func (r *K8sRuntime) CreateWorkspace(ctx context.Context, opts CreateOptions) (s
 		return "", fmt.Errorf("create COOWorkspace %s: %w", name, err)
 	}
 
-	if _, err := r.waitForReady(ctx, name); err != nil {
+	podName, err := r.waitForReady(ctx, name)
+	if err != nil {
 		return name, fmt.Errorf("workspace %s did not become ready: %w", name, err)
 	}
 
+	// In handoff mode, inject the COO context into /workspace/CLAUDE.md.
+	if mode == "handoff" && opts.Concept != "" {
+		if injectErr := r.injectHandoffContext(ctx, podName, opts.Concept); injectErr != nil {
+			// Non-fatal: warn and continue; the workspace is still usable.
+			fmt.Fprintf(os.Stderr, "Warning: handoff context injection failed: %v\n", injectErr)
+		}
+	}
+
 	return name, nil
+}
+
+// injectHandoffContext fetches COO CRD data for the named concept, renders the
+// handoff CLAUDE.md, and writes it into the workspace pod.
+func (r *K8sRuntime) injectHandoffContext(ctx context.Context, podName, conceptName string) error {
+	fmt.Printf("Injecting handoff context for concept %s...\n", conceptName)
+
+	data, err := handoff.FetchHandoffData(ctx, r.dynamicClient, r.namespace, conceptName)
+	if err != nil {
+		return fmt.Errorf("fetch handoff data: %w", err)
+	}
+
+	content, err := handoff.Render(data)
+	if err != nil {
+		return fmt.Errorf("render handoff template: %w", err)
+	}
+
+	if err := handoff.InjectCLAUDEMD(content, podName, r.namespace, r.cfg.Kubeconfig, r.cfg.KubeContext); err != nil {
+		return fmt.Errorf("inject CLAUDE.md: %w", err)
+	}
+
+	fmt.Println("Handoff context injected successfully.")
+	return nil
 }
 
 // listActiveWorkspaces returns COOWorkspaces whose status.phase is not
