@@ -1,42 +1,46 @@
 package runtime
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/tools/remotecommand"
-
-	k8sclient "github.com/bobbydeveaux/coo-cli/internal/k8s"
 )
 
 const (
-	cooAPIGroup     = "coo.itsacoo.com"
-	k8sProbeTimeout = 5 * time.Second
-	createTimeout   = 120 * time.Second
-	pollInterval    = 2 * time.Second
+	cooAPIGroup        = "coo.itsacoo.com"
+	cooAPIVersion      = "v1alpha1"
+	k8sProbeTimeout    = 5 * time.Second
+	createReadyTimeout = 120 * time.Second
+	createPollInterval = 2 * time.Second
+	defaultNamespace   = "coo-system"
+	defaultWorkerImage = "ghcr.io/bobbydeveaux/code-orchestrator-operator/coo-worker-claude:latest"
+	workspaceContainer = "workspace"
 )
 
 var cooWorkspaceGVR = schema.GroupVersionResource{
-	Group:    "coo.itsacoo.com",
-	Version:  "v1alpha1",
+	Group:    cooAPIGroup,
+	Version:  cooAPIVersion,
 	Resource: "cooworkspaces",
 }
 
 // K8sRuntime implements Runtime using the itsacoo operator and COOWorkspace CRs.
 type K8sRuntime struct {
-	cfg    Config
-	client *k8sclient.Client
+	cfg             Config
+	discoveryClient discovery.DiscoveryInterface
+	dynamicClient   dynamic.Interface
+	restConfig      *rest.Config
+	namespace       string
 }
 
 // newK8sRuntime creates a K8sRuntime after verifying the k8s API is reachable
@@ -51,19 +55,27 @@ func newK8sRuntime(ctx context.Context, cfg Config) (*K8sRuntime, error) {
 		return nil, fmt.Errorf("COO operator not detected: %w", err)
 	}
 
-	// Build the full operations client (no short timeout).
-	c, err := k8sclient.New(k8sclient.Config{
-		Kubeconfig: cfg.Kubeconfig,
-		Context:    cfg.KubeContext,
-	})
+	dynClient, restCfg, err := buildRuntimeClients(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("build k8s operations client: %w", err)
+		return nil, fmt.Errorf("build k8s runtime clients: %w", err)
 	}
 
-	return &K8sRuntime{cfg: cfg, client: c}, nil
+	ns := cfg.Namespace
+	if ns == "" {
+		ns = defaultNamespace
+	}
+
+	return &K8sRuntime{
+		cfg:             cfg,
+		discoveryClient: dc,
+		dynamicClient:   dynClient,
+		restConfig:      restCfg,
+		namespace:       ns,
+	}, nil
 }
 
-// buildDiscoveryClient constructs a discovery client with a short timeout for probing.
+// buildDiscoveryClient constructs a short-timeout discovery client used for
+// probing whether the k8s API and COO CRDs are present.
 func buildDiscoveryClient(cfg Config) (discovery.DiscoveryInterface, error) {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if cfg.Kubeconfig != "" {
@@ -89,6 +101,35 @@ func buildDiscoveryClient(cfg Config) (discovery.DiscoveryInterface, error) {
 	return discovery.NewDiscoveryClientForConfig(restCfg)
 }
 
+// buildRuntimeClients constructs a dynamic client and REST config for runtime
+// operations (no short probe timeout).
+func buildRuntimeClients(cfg Config) (dynamic.Interface, *rest.Config, error) {
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if cfg.Kubeconfig != "" {
+		loadingRules.ExplicitPath = cfg.Kubeconfig
+	}
+
+	overrides := &clientcmd.ConfigOverrides{}
+	if cfg.KubeContext != "" {
+		overrides.CurrentContext = cfg.KubeContext
+	}
+
+	restCfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		loadingRules,
+		overrides,
+	).ClientConfig()
+	if err != nil {
+		return nil, nil, fmt.Errorf("load kubeconfig: %w", err)
+	}
+
+	dynClient, err := dynamic.NewForConfig(restCfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create dynamic client: %w", err)
+	}
+
+	return dynClient, restCfg, nil
+}
+
 // probeCOOCRD checks that the k8s API server is reachable and that the
 // coo.itsacoo.com API group (COO operator CRDs) is registered.
 func probeCOOCRD(dc discovery.DiscoveryInterface) error {
@@ -112,11 +153,11 @@ func (r *K8sRuntime) Type() RuntimeType { return RuntimeK8s }
 // ListWorkspaces implements Runtime.
 // Returns all COOWorkspaces in the configured namespace with a non-Terminated phase.
 func (r *K8sRuntime) ListWorkspaces(ctx context.Context) ([]WorkspaceInfo, error) {
-	list, err := r.client.Dynamic.Resource(cooWorkspaceGVR).
-		Namespace(r.cfg.Namespace).
+	list, err := r.dynamicClient.Resource(cooWorkspaceGVR).
+		Namespace(r.namespace).
 		List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("list COOWorkspaces in %s: %w", r.cfg.Namespace, err)
+		return nil, fmt.Errorf("list COOWorkspaces in %s: %w", r.namespace, err)
 	}
 
 	var workspaces []WorkspaceInfo
@@ -147,6 +188,10 @@ func (r *K8sRuntime) ListWorkspaces(ctx context.Context) ([]WorkspaceInfo, error
 // Generates a ws-<timestamp> name, creates the COOWorkspace CR, polls until Ready,
 // and returns the workspace name.
 func (r *K8sRuntime) CreateWorkspace(ctx context.Context, opts CreateOptions) (string, error) {
+	if opts.Repo == "" && opts.Concept == "" {
+		return "", fmt.Errorf("one of --repo or --concept is required")
+	}
+
 	name := fmt.Sprintf("ws-%d", time.Now().Unix())
 
 	mode := "freestyle"
@@ -156,71 +201,98 @@ func (r *K8sRuntime) CreateWorkspace(ctx context.Context, opts CreateOptions) (s
 
 	image := opts.Image
 	if image == "" {
-		image = "ghcr.io/bobbydeveaux/code-orchestrator-operator/coo-worker-claude:latest"
+		image = defaultWorkerImage
 	}
 
-	ws := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "coo.itsacoo.com/v1alpha1",
-			"kind":       "COOWorkspace",
-			"metadata": map[string]interface{}{
-				"name":      name,
-				"namespace": r.cfg.Namespace,
-			},
-			"spec": map[string]interface{}{
-				"mode":            mode,
-				"repo":            opts.Repo,
-				"conceptRef":      opts.Concept,
-				"model":           opts.Model,
-				"ttl":             opts.TTL,
-				"image":           image,
-				"imagePullPolicy": "IfNotPresent",
-			},
-		},
-	}
+	wsObj := buildCOOWorkspace(name, r.namespace, mode, opts, image)
+	fmt.Printf("Creating workspace %s...\n", name)
 
-	_, err := r.client.Dynamic.Resource(cooWorkspaceGVR).
-		Namespace(r.cfg.Namespace).
-		Create(ctx, ws, metav1.CreateOptions{})
+	_, err := r.dynamicClient.Resource(cooWorkspaceGVR).Namespace(r.namespace).Create(
+		ctx, wsObj, metav1.CreateOptions{},
+	)
 	if err != nil {
 		return "", fmt.Errorf("create COOWorkspace %s: %w", name, err)
 	}
 
-	fmt.Fprintf(os.Stderr, "Workspace %s created. Waiting for pod to be ready", name)
-	if err := r.waitForReady(ctx, name); err != nil {
-		fmt.Fprintln(os.Stderr)
+	if _, err := r.waitForReady(ctx, name); err != nil {
 		return name, fmt.Errorf("workspace %s did not become ready: %w", name, err)
 	}
-	fmt.Fprintln(os.Stderr, " ready.")
 
 	return name, nil
 }
 
-// waitForReady polls status.phase until "Ready" or the 120s deadline is exceeded.
-func (r *K8sRuntime) waitForReady(ctx context.Context, name string) error {
-	deadline := time.Now().Add(createTimeout)
-	spinner := []string{"|", "/", "-", "\\"}
-	tick := 0
-
-	for time.Now().Before(deadline) {
-		ws, err := r.client.Dynamic.Resource(cooWorkspaceGVR).
-			Namespace(r.cfg.Namespace).
-			Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			return fmt.Errorf("get workspace status: %w", err)
-		}
-
-		phase, _, _ := unstructured.NestedString(ws.Object, "status", "phase")
-		if strings.EqualFold(phase, "Ready") {
-			return nil
-		}
-
-		fmt.Fprintf(os.Stderr, "\r  %s waiting (phase: %s)...   ", spinner[tick%len(spinner)], phase)
-		tick++
-		time.Sleep(pollInterval)
+// listActiveWorkspaces returns COOWorkspaces whose status.phase is not
+// "Terminated" (and not empty, which means not yet initialised).
+func (r *K8sRuntime) listActiveWorkspaces(ctx context.Context) ([]unstructured.Unstructured, error) {
+	list, err := r.dynamicClient.Resource(cooWorkspaceGVR).Namespace(r.namespace).List(
+		ctx, metav1.ListOptions{},
+	)
+	if err != nil {
+		return nil, err
 	}
 
-	return fmt.Errorf("timed out after %s", createTimeout)
+	var active []unstructured.Unstructured
+	for _, item := range list.Items {
+		phase, _, _ := unstructured.NestedString(item.Object, "status", "phase")
+		if phase != "" && phase != "Terminated" {
+			active = append(active, item)
+		}
+	}
+	return active, nil
+}
+
+// waitForReady polls the COOWorkspace until status.phase == "Ready", returning
+// the pod name. It times out after createReadyTimeout.
+func (r *K8sRuntime) waitForReady(ctx context.Context, name string) (string, error) {
+	return r.waitForReadyWithInterval(ctx, name, createPollInterval)
+}
+
+// waitForReadyWithInterval is the testable core of waitForReady, accepting a
+// configurable poll interval.
+func (r *K8sRuntime) waitForReadyWithInterval(ctx context.Context, name string, interval time.Duration) (string, error) {
+	deadline := time.Now().Add(createReadyTimeout)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	fmt.Print("Waiting for workspace to be ready")
+
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Println()
+			return "", ctx.Err()
+		case <-ticker.C:
+			if time.Now().After(deadline) {
+				fmt.Println()
+				return "", fmt.Errorf("timed out after %s waiting for workspace to be ready", createReadyTimeout)
+			}
+
+			ws, err := r.dynamicClient.Resource(cooWorkspaceGVR).Namespace(r.namespace).Get(
+				ctx, name, metav1.GetOptions{},
+			)
+			if err != nil {
+				fmt.Print(".")
+				continue
+			}
+
+			phase, _, _ := unstructured.NestedString(ws.Object, "status", "phase")
+			switch phase {
+			case "Ready":
+				fmt.Println(" Ready!")
+				podName, _, _ := unstructured.NestedString(ws.Object, "status", "podName")
+				return podName, nil
+			case "Failed", "Error":
+				fmt.Println()
+				msg, _, _ := unstructured.NestedString(ws.Object, "status", "message")
+				if msg != "" {
+					return "", fmt.Errorf("workspace entered %s phase: %s", phase, msg)
+				}
+				return "", fmt.Errorf("workspace entered %s phase", phase)
+			default:
+				fmt.Print(".")
+			}
+		}
+	}
 }
 
 // ExecWorkspace implements Runtime.
@@ -231,11 +303,8 @@ func (r *K8sRuntime) ExecWorkspace(ctx context.Context, name string) error {
 		return err
 	}
 
-	command := []string{
-		"bash", "-c",
-		`git config --global --add safe.directory '*' && cd /workspace && claude --dangerously-skip-permissions`,
-	}
-	return r.execIntoPod(ctx, podName, command)
+	return r.execIntoPod(podName,
+		"git config --global --add safe.directory '*' && cd /workspace && claude --dangerously-skip-permissions")
 }
 
 // ResumeWorkspace implements Runtime.
@@ -246,24 +315,21 @@ func (r *K8sRuntime) ResumeWorkspace(ctx context.Context, name string) error {
 		return err
 	}
 
-	sessionID, err := r.findLastSessionID(ctx, podName)
+	sessionID, err := r.findLastSessionID(podName)
 	if err != nil {
 		// No session found — fall back to a fresh exec.
 		fmt.Fprintf(os.Stderr, "No previous session found (%v); starting fresh.\n", err)
 		return r.ExecWorkspace(ctx, name)
 	}
 
-	command := []string{
-		"bash", "-c",
-		fmt.Sprintf(`cd /workspace && claude --dangerously-skip-permissions --resume %s`, sessionID),
-	}
-	return r.execIntoPod(ctx, podName, command)
+	return r.execIntoPod(podName,
+		fmt.Sprintf("cd /workspace && claude --dangerously-skip-permissions --resume %s", sessionID))
 }
 
 // DeleteWorkspace implements Runtime.
 func (r *K8sRuntime) DeleteWorkspace(ctx context.Context, name string) error {
-	err := r.client.Dynamic.Resource(cooWorkspaceGVR).
-		Namespace(r.cfg.Namespace).
+	err := r.dynamicClient.Resource(cooWorkspaceGVR).
+		Namespace(r.namespace).
 		Delete(ctx, name, metav1.DeleteOptions{})
 	if err != nil {
 		return fmt.Errorf("delete COOWorkspace %s: %w", name, err)
@@ -273,8 +339,8 @@ func (r *K8sRuntime) DeleteWorkspace(ctx context.Context, name string) error {
 
 // getPodName reads status.podName from the named COOWorkspace CR.
 func (r *K8sRuntime) getPodName(ctx context.Context, name string) (string, error) {
-	ws, err := r.client.Dynamic.Resource(cooWorkspaceGVR).
-		Namespace(r.cfg.Namespace).
+	ws, err := r.dynamicClient.Resource(cooWorkspaceGVR).
+		Namespace(r.namespace).
 		Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return "", fmt.Errorf("get workspace %s: %w", name, err)
@@ -288,17 +354,28 @@ func (r *K8sRuntime) getPodName(ctx context.Context, name string) (string, error
 }
 
 // findLastSessionID discovers the most recent Claude Code session in the pod by
-// listing JSONL files under /tmp/.claude/projects/ and extracting the filename stem.
-func (r *K8sRuntime) findLastSessionID(ctx context.Context, podName string) (string, error) {
-	var outBuf, errBuf bytes.Buffer
-	err := r.execCapture(ctx, podName, []string{
-		"bash", "-c", `ls -t /tmp/.claude/projects/*/*.jsonl 2>/dev/null | head -1`,
-	}, &outBuf, &errBuf)
+// listing JSONL files under /tmp/.claude/projects/ via kubectl exec.
+func (r *K8sRuntime) findLastSessionID(podName string) (string, error) {
+	args := []string{
+		"exec", podName,
+		"-n", r.namespace,
+		"-c", workspaceContainer,
+		"--", "bash", "-c", "ls -t /tmp/.claude/projects/*/*.jsonl 2>/dev/null | head -1",
+	}
+
+	if r.cfg.Kubeconfig != "" {
+		args = append([]string{"--kubeconfig", r.cfg.Kubeconfig}, args...)
+	}
+	if r.cfg.KubeContext != "" {
+		args = append([]string{"--context", r.cfg.KubeContext}, args...)
+	}
+
+	out, err := exec.Command("kubectl", args...).Output()
 	if err != nil {
 		return "", fmt.Errorf("list session files: %w", err)
 	}
 
-	path := strings.TrimSpace(outBuf.String())
+	path := strings.TrimSpace(string(out))
 	if path == "" {
 		return "", fmt.Errorf("no session files found")
 	}
@@ -313,71 +390,64 @@ func (r *K8sRuntime) findLastSessionID(ctx context.Context, podName string) (str
 	return sessionID, nil
 }
 
-// execIntoPod runs an interactive (TTY) exec into the workspace container.
-func (r *K8sRuntime) execIntoPod(ctx context.Context, podName string, command []string) error {
-	req := r.client.Clientset.CoreV1().RESTClient().Post().
-		Resource("pods").
-		Name(podName).
-		Namespace(r.cfg.Namespace).
-		SubResource("exec").
-		VersionedParams(&corev1.PodExecOptions{
-			Container: "workspace",
-			Command:   command,
-			Stdin:     true,
-			Stdout:    true,
-			Stderr:    true,
-			TTY:       true,
-		}, clientgoscheme.ParameterCodec)
-
-	executor, err := remotecommand.NewSPDYExecutor(r.client.RestConfig, "POST", req.URL())
-	if err != nil {
-		return fmt.Errorf("create SPDY executor: %w", err)
+// execIntoPod runs kubectl exec -it into the workspace container with the given shell command.
+func (r *K8sRuntime) execIntoPod(podName, shellCmd string) error {
+	args := []string{
+		"exec", "-it", podName,
+		"-n", r.namespace,
+		"-c", workspaceContainer,
+		"--",
+		"bash", "-c", shellCmd,
 	}
 
-	streamErr := executor.StreamWithContext(ctx, remotecommand.StreamOptions{
-		Stdin:  os.Stdin,
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
-		Tty:    true,
-	})
-	if streamErr != nil && !isRemoteExitError(streamErr) {
-		return fmt.Errorf("exec stream: %w", streamErr)
+	if r.cfg.Kubeconfig != "" {
+		args = append([]string{"--kubeconfig", r.cfg.Kubeconfig}, args...)
 	}
-	return nil
+	if r.cfg.KubeContext != "" {
+		args = append([]string{"--context", r.cfg.KubeContext}, args...)
+	}
+
+	cmd := exec.Command("kubectl", args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
-// execCapture runs a non-interactive command and captures stdout/stderr into buffers.
-func (r *K8sRuntime) execCapture(ctx context.Context, podName string, command []string, stdout, stderr *bytes.Buffer) error {
-	req := r.client.Clientset.CoreV1().RESTClient().Post().
-		Resource("pods").
-		Name(podName).
-		Namespace(r.cfg.Namespace).
-		SubResource("exec").
-		VersionedParams(&corev1.PodExecOptions{
-			Container: "workspace",
-			Command:   command,
-			Stdin:     false,
-			Stdout:    true,
-			Stderr:    true,
-			TTY:       false,
-		}, clientgoscheme.ParameterCodec)
-
-	executor, err := remotecommand.NewSPDYExecutor(r.client.RestConfig, "POST", req.URL())
-	if err != nil {
-		return fmt.Errorf("create SPDY executor: %w", err)
+// buildCOOWorkspace constructs the unstructured COOWorkspace object for creation.
+func buildCOOWorkspace(name, namespace, mode string, opts CreateOptions, image string) *unstructured.Unstructured {
+	model := opts.Model
+	if model == "" {
+		model = "claude-sonnet-4-5"
+	}
+	ttl := opts.TTL
+	if ttl == "" {
+		ttl = "4h"
 	}
 
-	return executor.StreamWithContext(ctx, remotecommand.StreamOptions{
-		Stdout: stdout,
-		Stderr: stderr,
-	})
-}
-
-// isRemoteExitError returns true when err represents a non-zero remote process exit,
-// which we treat as a normal exit rather than a transport failure.
-func isRemoteExitError(err error) bool {
-	if err == nil {
-		return false
+	spec := map[string]interface{}{
+		"mode":            mode,
+		"model":           model,
+		"ttl":             ttl,
+		"image":           image,
+		"imagePullPolicy": "IfNotPresent",
 	}
-	return strings.Contains(err.Error(), "command terminated with exit code")
+	if opts.Repo != "" {
+		spec["repo"] = opts.Repo
+	}
+	if opts.Concept != "" {
+		spec["conceptRef"] = opts.Concept
+	}
+
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": cooAPIGroup + "/" + cooAPIVersion,
+			"kind":       "COOWorkspace",
+			"metadata": map[string]interface{}{
+				"name":      name,
+				"namespace": namespace,
+			},
+			"spec": spec,
+		},
+	}
 }
