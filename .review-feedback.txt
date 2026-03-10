@@ -1,6 +1,8 @@
 ## Code Review - Changes Requested
 
-The review is complete. This PR is blocked because it contains **zero code changes** — only the branch initialization commit. The entire implementation (WorkspaceEntry struct, atomic file I/O with correct permissions, Claude token resolution chain, and GitHub token resolution chain) needs to be written before this can be merged.
+**Decision: `changes_requested`**
+
+The PR is in DRAFT/WIP state and contains no implementation — only a cleanup deletion of `.claude-output.json`. The actual task (implementing `LocalRuntime.CreateWorkspace` per issue #17) has not been started. The review is flagged as blocking because the PR would merge with zero functional change toward its stated goal, leaving all `local*` workspace operations as unimplemented stubs.
 
 **Action Required**: Please address the blocking issues above before merging.
 
