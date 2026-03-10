@@ -1,0 +1,9 @@
+{
+  "alreadyImplemented": true,
+  "prTitle": "chore: close duplicate - feature already exists",
+  "prBody": "## Summary\n\nThe requested functionality for `[task-coo-cli-workspace-feat-local-workspace-lifecycle-1]` — local Exec/Resume/Delete operations — is already fully implemented in the main branch.\n\n### What exists and where\n\n**`internal/runtime/local.go`** contains the complete `LocalRuntime` implementation:\n- `ExecWorkspace` (line 112): Runs a Docker container against the workspace volume. On first run, defers to the container entrypoint for git clone + bootstrap. On subsequent runs, starts Claude directly.\n- `ResumeWorkspace` (line 120): Scans `claude-data/projects/*/*.jsonl` for the most recently modified session file and passes `--resume <id>` to Claude. Falls back to `ExecWorkspace` if no session is found.\n- `DeleteWorkspace` (line 140): Removes the entry from `~/.coo/workspaces.json` and deletes the `~/.coo/volumes/<name>` directory.\n\n**`internal/workspace/exec.go`**: `Exec()` and `Resume()` functions delegate to the runtime via `runtime.Detect()`.\n\n**`internal/workspace/delete.go`**: `Delete()` function delegates to the runtime via `runtime.Detect()`.\n\n**`cmd/workspace.go`**: All commands (`exec`, `resume`, `delete`) are wired up as cobra subcommands.\n\nThis was implemented in commit `8142bd2` (PR #22, closes #17). Tests for all operations are present in `internal/runtime/local_test.go`.\n\nCloses #18",
+  "testsPass": true,
+  "filesChanged": [],
+  "docsUpdated": [],
+  "docsReviewed": ["README.md", "docs/concepts/coo-cli-workspace/LLD.md"]
+}
