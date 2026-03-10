@@ -1,0 +1,176 @@
+Epics:
+- Features:
+  - Sprint: 1
+    dependencies: null
+    description: 'Implement internal/k8s/client.go: kubeconfig loading (KUBECONFIG
+      env, ~/.kube/config, --kubeconfig/--context flags), dynamic client construction,
+      REST config, and lightweight CRD existence probe with 5s timeout for mode detection.'
+    estimatedComplexity: low
+    files:
+    - internal/k8s/client.go
+    id: coo-cli-workspace-feat-k8s-client
+    name: Kubernetes Client Setup
+    project: coo-cli
+    type: enabler
+  - Sprint: 1
+    dependencies:
+    - coo-cli-workspace-feat-k8s-client
+    description: 'Implement internal/runtime/detect.go: resolve k8s vs local mode
+      in priority order (--local flag → --context/--kubeconfig flag → k8s API probe
+      + CRD check → local fallback). Detect container binary by trying docker, podman,
+      nerdctl via exec.LookPath. Expose detect.Resolve(flags) returning a Runtime
+      interface.'
+    estimatedComplexity: low
+    files:
+    - internal/runtime/detect.go
+    id: coo-cli-workspace-feat-runtime-detection
+    name: Runtime Mode Detection
+    project: coo-cli
+    type: enabler
+  ID: coo-cli-workspace-epic-infrastructure
+  Name: Core Infrastructure
+- Features:
+  - Sprint: 2
+    dependencies:
+    - coo-cli-workspace-feat-k8s-client
+    - coo-cli-workspace-feat-runtime-detection
+    description: 'Implement COOWorkspace CR creation in internal/runtime/k8s.go: check
+      for existing non-Terminated workspaces and prompt to resume, generate ws-<unix-timestamp>
+      name, create COOWorkspace CR (mode, repo, conceptRef, model, ttl, image), poll
+      status.phase == Ready at 2s intervals up to 120s with progress indicator, then
+      exec -c workspace with bash -c ''git config --global --add safe.directory "*"
+      && cd /workspace && claude --dangerously-skip-permissions''. Print resume hint
+      on exit.'
+    estimatedComplexity: high
+    files:
+    - internal/runtime/k8s.go
+    - internal/workspace/create.go
+    id: coo-cli-workspace-feat-k8s-workspace-create
+    name: K8s Workspace Create
+    project: coo-cli
+    type: feature
+  - Sprint: 3
+    dependencies:
+    - coo-cli-workspace-feat-k8s-workspace-create
+    description: 'Implement remaining k8s runtime operations in internal/runtime/k8s.go:
+      List (query all COOWorkspaces in coo-system, return WorkspaceInfo slice), Exec
+      (get podName from status, exec -c workspace), Resume (glob /tmp/.claude/projects/*/*.jsonl
+      via pod exec to find last session ID, start Claude with --resume <id>), Delete
+      (delete COOWorkspace CR). Also implement internal/workspace/list.go, exec.go,
+      delete.go delegates.'
+    estimatedComplexity: medium
+    files:
+    - internal/runtime/k8s.go
+    - internal/workspace/list.go
+    - internal/workspace/exec.go
+    - internal/workspace/delete.go
+    id: coo-cli-workspace-feat-k8s-workspace-lifecycle
+    name: K8s Workspace List/Exec/Resume/Delete
+    project: coo-cli
+    type: feature
+  ID: coo-cli-workspace-epic-k8s-runtime
+  Name: K8s Workspace Runtime
+- Features:
+  - Sprint: 2
+    dependencies:
+    - coo-cli-workspace-feat-runtime-detection
+    description: 'Implement ~/.coo/workspaces.json read/write in internal/runtime/local.go:
+      define WorkspaceEntry struct (name, containerID, repo, concept, createdAt, volumePath),
+      atomic writes via os.CreateTemp + os.Rename, mode 0600. Create ~/.coo/ and ~/.coo/volumes/
+      with mode 0700. Implement token resolution chain: --token flag → CLAUDE_CODE_OAUTH_TOKEN
+      env → ~/.claude/credentials.json → ~/.config/claude/credentials.json. GitHub
+      token chain: --github-token → GITHUB_TOKEN → GH_TOKEN → gh auth token subprocess
+      → anonymous.'
+    estimatedComplexity: medium
+    files:
+    - internal/runtime/local.go
+    id: coo-cli-workspace-feat-local-state
+    name: Local Workspace State Management
+    project: coo-cli
+    type: enabler
+  - Sprint: 3
+    dependencies:
+    - coo-cli-workspace-feat-local-state
+    description: 'Implement local Docker workspace creation: git clone repo into ~/.coo/volumes/<ws-name>/
+      on host, write /tmp/.claude.json bootstrap (onboarding complete, workspace trusted,
+      skipDangerousModePermissionPrompt), pull worker image ghcr.io/bobbydeveaux/code-orchestrator-operator/coo-worker-claude:latest,
+      run docker run -it with -v ~/.coo/volumes/<name>:/workspace, CLAUDE_CODE_OAUTH_TOKEN,
+      GITHUB_TOKEN (never ANTHROPIC_API_KEY), and exec bash -c ''git config --global
+      --add safe.directory "*" && cd /workspace && claude --dangerously-skip-permissions''.
+      Persist entry to workspaces.json. Print resume hint on exit.'
+    estimatedComplexity: high
+    files:
+    - internal/runtime/local.go
+    - internal/workspace/create.go
+    id: coo-cli-workspace-feat-local-workspace-create
+    name: Local Workspace Create
+    project: coo-cli
+    type: feature
+  - Sprint: 4
+    dependencies:
+    - coo-cli-workspace-feat-local-workspace-create
+    description: 'Implement remaining local runtime operations: List (read workspaces.json,
+      query Docker for container status, return WorkspaceInfo), Exec (docker exec
+      -it <containerID> bash -c ''...claude...''), Resume (glob ~/.coo/volumes/<name>/.claude/projects/*/*.jsonl
+      for last session ID, start with --resume <id>; restart stopped container first),
+      Delete (docker stop + remove container, delete volume directory, remove from
+      workspaces.json).'
+    estimatedComplexity: medium
+    files:
+    - internal/runtime/local.go
+    - internal/workspace/list.go
+    - internal/workspace/exec.go
+    - internal/workspace/delete.go
+    id: coo-cli-workspace-feat-local-workspace-lifecycle
+    name: Local Workspace List/Exec/Resume/Delete
+    project: coo-cli
+    type: feature
+  ID: coo-cli-workspace-epic-local-runtime
+  Name: Local Docker Runtime
+- Features:
+  - Sprint: 4
+    dependencies:
+    - coo-cli-workspace-feat-k8s-workspace-create
+    description: 'Implement internal/handoff/context.go: use k8s dynamic client to
+      fetch COOConcept, COOPlan, COOSprints, COOFeatures, COOTasks, COOWorkers from
+      coo-<concept> namespace. Implement internal/handoff/template.go: render CLAUDE.md
+      via text/template including override header, project metadata, rawConcept, planning
+      artifacts table, sprint/feature/task summary with ✅/⏳ icons, worker roster,
+      phase-specific action guidance. Inject into pod via client-go remotecommand
+      SPDY exec (bash -c ''cat > ...'') — no kubectl cp. Back up existing CLAUDE.md
+      as CLAUDE.md.original, prepend rendered context, append separator + original
+      as historical reference.'
+    estimatedComplexity: high
+    files:
+    - internal/handoff/context.go
+    - internal/handoff/template.go
+    id: coo-cli-workspace-feat-handoff-injection
+    name: Handoff CLAUDE.md Context Injection
+    project: coo-cli
+    type: feature
+  ID: coo-cli-workspace-epic-handoff
+  Name: Handoff Context Injection
+- Features:
+  - Sprint: 4
+    dependencies:
+    - coo-cli-workspace-feat-k8s-workspace-lifecycle
+    - coo-cli-workspace-feat-local-workspace-lifecycle
+    - coo-cli-workspace-feat-handoff-injection
+    description: 'Implement cmd/workspace.go: replace stubs with real workspace subcommands
+      (create, list, exec, resume, delete). Bind all flags (--repo, --concept, --model,
+      --ttl, --image, --local, --token, --github-token). Call detect.Resolve at top
+      of each subcommand, delegate to runtime interface methods. Unified list table
+      via tabwriter showing name/mode/phase/pod-or-container/created columns for both
+      k8s and local workspaces. SilenceUsage: true on root. Propagate non-zero exit
+      codes from container exec.'
+    estimatedComplexity: medium
+    files:
+    - cmd/workspace.go
+    - cmd/root.go
+    id: coo-cli-workspace-feat-cli-commands
+    name: Wire Up Workspace Cobra Commands
+    project: coo-cli
+    type: feature
+  ID: coo-cli-workspace-epic-cli
+  Name: CLI Command Wiring
+Version: v1alpha1

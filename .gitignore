@@ -30,3 +30,15 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Claude Code workspace files
+.claude/
+.coo/
+*.claude-session
+*.claude-checkpoint
+.worktrees/
+.codex/
+AGENTS.md
+.claude-resolution.json
+.conflict-info.json
+.claude-output.json
