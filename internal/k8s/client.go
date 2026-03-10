@@ -8,6 +8,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -29,11 +30,12 @@ type Config struct {
 	Context string
 }
 
-// Client bundles a REST config, dynamic client, and discovery client.
+// Client bundles a REST config, dynamic client, discovery client, and typed clientset.
 type Client struct {
 	RestConfig *rest.Config
 	Dynamic    dynamic.Interface
 	Discovery  discovery.DiscoveryInterface
+	Clientset  kubernetes.Interface
 }
 
 // New creates a Kubernetes Client from the given Config.
@@ -69,10 +71,16 @@ func New(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("create discovery client: %w", err)
 	}
 
+	kclient, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return nil, fmt.Errorf("create kubernetes clientset: %w", err)
+	}
+
 	return &Client{
 		RestConfig: restCfg,
 		Dynamic:    dynClient,
 		Discovery:  discClient,
+		Clientset:  kclient,
 	}, nil
 }
 

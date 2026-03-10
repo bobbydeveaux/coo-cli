@@ -8,6 +8,7 @@ import (
 
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 )
 
@@ -27,6 +28,7 @@ func newTestClient(t *testing.T, serverURL string) *Client {
 		RestConfig: restCfg,
 		Dynamic:    dynClient,
 		Discovery:  discClient,
+		Clientset:  fake.NewSimpleClientset(),
 	}
 }
 

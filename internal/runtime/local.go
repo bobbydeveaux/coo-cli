@@ -22,8 +22,8 @@ func newLocalRuntime(cfg Config) *LocalRuntime {
 func (r *LocalRuntime) Type() RuntimeType { return RuntimeLocal }
 
 // CreateWorkspace implements Runtime.
-func (r *LocalRuntime) CreateWorkspace(ctx context.Context, opts CreateOptions) error {
-	return fmt.Errorf("local CreateWorkspace: not yet implemented")
+func (r *LocalRuntime) CreateWorkspace(ctx context.Context, opts CreateOptions) (string, error) {
+	return "", fmt.Errorf("local CreateWorkspace: not yet implemented")
 }
 
 // ListWorkspaces implements Runtime.

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"github.com/bobbydeveaux/coo-cli/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -31,10 +32,30 @@ COO context injected into the workspace CLAUDE.md.`,
 
   # Handoff — auto-detects repo from COOConcept
   coo workspace create --concept my-concept`,
+	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// TODO: implement
-		cmd.Println("workspace create — not yet implemented")
-		return nil
+		repo, _ := cmd.Flags().GetString("repo")
+		concept, _ := cmd.Flags().GetString("concept")
+		model, _ := cmd.Flags().GetString("model")
+		ttl, _ := cmd.Flags().GetString("ttl")
+		image, _ := cmd.Flags().GetString("image")
+		token, _ := cmd.Flags().GetString("token")
+		githubToken, _ := cmd.Flags().GetString("github-token")
+
+		return workspace.Create(cmd.Context(), workspace.CreateConfig{
+			Kubeconfig:  kubeconfig,
+			KubeContext: kubecontext,
+			Namespace:   namespace,
+			LocalMode:   localMode,
+
+			Repo:        repo,
+			Concept:     concept,
+			Model:       model,
+			TTL:         ttl,
+			Image:       image,
+			Token:       token,
+			GithubToken: githubToken,
+		})
 	},
 }
 
@@ -91,4 +112,8 @@ func init() {
 	workspaceCreateCmd.Flags().String("image", "", "Worker image override (default: ghcr.io/bobbydeveaux/code-orchestrator-operator/coo-worker-claude:latest)")
 	workspaceCreateCmd.Flags().String("token", "", "Claude Code OAuth token (default: $CLAUDE_CODE_OAUTH_TOKEN)")
 	workspaceCreateCmd.Flags().String("github-token", "", "GitHub token for private repos (default: $GITHUB_TOKEN)")
+
+	// Exactly one of --repo or --concept must be provided.
+	workspaceCreateCmd.MarkFlagsOneRequired("repo", "concept")
+	workspaceCreateCmd.MarkFlagsMutuallyExclusive("repo", "concept")
 }

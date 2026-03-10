@@ -63,8 +63,9 @@ type Runtime interface {
 	// Type returns which backend is active.
 	Type() RuntimeType
 
-	// CreateWorkspace creates a new workspace and execs into it.
-	CreateWorkspace(ctx context.Context, opts CreateOptions) error
+	// CreateWorkspace creates a new workspace and returns its name.
+	// The caller is responsible for calling ExecWorkspace afterwards.
+	CreateWorkspace(ctx context.Context, opts CreateOptions) (string, error)
 
 	// ListWorkspaces returns all known workspaces for this backend.
 	ListWorkspaces(ctx context.Context) ([]WorkspaceInfo, error)
