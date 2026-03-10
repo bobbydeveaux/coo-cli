@@ -3,285 +3,188 @@ package handoff
 import (
 	"bytes"
 	"fmt"
-	"strings"
 	"text/template"
-	"time"
-
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-// templateData is the structured view of a HandoffContext used by the Go template.
-type templateData struct {
-	// Project
-	Repo        string
-	ConceptName string
-	Phase       string
-	Tier        string
-	RawConcept  string
-
-	// Planning artifacts
-	Artifacts    map[string]string
-	PlanningPRURL string
-	EpicCount    int64
-	FeatureCount int64
-	IssueCount   int64
-	ROAM         string
-
-	// Sprint / feature / task / worker summaries
-	Sprints  []sprintRow
-	Features []featureRow
-	Tasks    []taskRow
-	Workers  []workerRow
+// taskIcon returns a status emoji for use in the task table.
+func taskIcon(phase string) string {
+	switch phase {
+	case "Completed", "Done", "Merged":
+		return "✅"
+	default:
+		return "⏳"
+	}
 }
 
-type sprintRow  struct{ Name, Type, Phase string }
-type featureRow struct{ Name, Phase string }
-type taskRow    struct{ Name, Worker, Priority, Phase string; PRNumber int64 }
-type workerRow  struct{ Name, AgentType, Phase string }
+var claudeMDTmpl = template.Must(
+	template.New("handoff-claude-md").
+		Funcs(template.FuncMap{"taskIcon": taskIcon}).
+		Parse(rawTemplate),
+)
 
-const handoffTemplate = `
-⚠️ COO HANDOFF WORKSPACE — READ THIS SECTION FIRST
-====================================================
+// rawTemplate is the Go text/template source for the handoff CLAUDE.md header.
+// It is separated from the function to keep claudeMDTmpl initialisation clean.
+const rawTemplate = `# ⚠️ COO HANDOFF WORKSPACE — READ THIS SECTION FIRST
 
-This workspace is managed by **itsacoo** (Code Orchestrator Operator), a
-Kubernetes-native AI software development system.  The operator manages the
-full lifecycle of concepts from planning through execution using a hierarchy of
-custom resources: COOConcept → COOPlan → COOSprints → COOFeatures → COOTasks.
+This workspace was pre-configured by the **itsacoo** (Code Orchestrator Operator) system.
+Read this section carefully before taking any action in the repository.
+
+---
+
+## What is itsacoo?
+
+**itsacoo** is a Kubernetes-native AI software development system. It orchestrates an AI
+workforce — planners, architects, engineers, and reviewers — to build software end-to-end
+from a high-level concept. The operator manages the full lifecycle: requirements gathering,
+planning, sprint execution, PR creation, and review.
+
+You are running inside a **handoff workspace** — a containerised environment where a
+human (or AI) can review progress, pick up open tasks, or guide the system forward.
+
+---
 
 ## Project
 
-| Field       | Value                |
-|-------------|----------------------|
-| Repo        | {{ .Repo }}          |
-| Concept     | {{ .ConceptName }}   |
-| Phase       | {{ .Phase }}         |
-| Complexity  | {{ .Tier }}          |
+| Field              | Value |
+|--------------------|-------|
+| **Concept**        | {{.ConceptName}} |
+{{- if .Repo}}
+| **Repo**           | {{.Repo}} |
+{{- end}}
+| **Phase**          | {{.ConceptPhase}} |
+| **Complexity Tier**| {{.ComplexityTier}} |
 
 ### Original Requirement
 
-{{ .RawConcept }}
-
-## Planning Artifacts
-
-| Artifact | Path / URL |
-|----------|-----------|
-{{- range $k, $v := .Artifacts }}
-| {{ $k }} | {{ $v }} |
-{{- end }}
-
-{{- if .PlanningPRURL }}
-
-Planning PR: {{ .PlanningPRURL }}
-{{- end }}
-{{- if or .EpicCount .FeatureCount .IssueCount }}
-
-Counts — Epics: {{ .EpicCount }} | Features: {{ .FeatureCount }} | Issues: {{ .IssueCount }}
-{{- end }}
-{{- if .ROAM }}
-
-ROAM: {{ .ROAM }}
-{{- end }}
-
-## Sprint Summary
-
-{{- if .Sprints }}
-| Sprint | Type | Phase |
-|--------|------|-------|
-{{- range .Sprints }}
-| {{ .Name }} | {{ .Type }} | {{ .Phase }} |
-{{- end }}
-{{- else }}
-_No sprints found._
-{{- end }}
-
-## Features
-
-{{- if .Features }}
-| Feature | Phase |
-|---------|-------|
-{{- range .Features }}
-| {{ .Name }} | {{ .Phase }} |
-{{- end }}
-{{- else }}
-_No features found._
-{{- end }}
-
-## Tasks
-
-{{- if .Tasks }}
-| Task | Worker | Priority | Phase | PR |
-|------|--------|----------|-------|----|
-{{- range .Tasks }}
-| {{ taskStatus .Phase }} {{ .Name }} | {{ .Worker }} | {{ .Priority }} | {{ .Phase }} | {{ prLink .PRNumber }} |
-{{- end }}
-{{- else }}
-_No tasks found._
-{{- end }}
-
-## Worker Roster
-
-{{- if .Workers }}
-| Worker | Agent Type | Phase |
-|--------|-----------|-------|
-{{- range .Workers }}
-| {{ .Name }} | {{ .AgentType }} | {{ .Phase }} |
-{{- end }}
-{{- else }}
-_No workers found._
-{{- end }}
-
-## What You Should Do
-
-{{- if eq .Phase "Planned" }}
-
-1. Review the planning PR (link above) for PRD/HLD/LLD/epic/tasks.
-2. Check the generated GitHub issues for correctness.
-3. Approve the planning PR to trigger Sprint 1 execution.
-{{- else if eq .Phase "Executing" }}
-
-1. Review the task list above — pick up any ⏳ open tasks.
-2. Review worker PRs and provide feedback where needed.
-3. Mark tasks done in the operator by closing the relevant GitHub issues.
-{{- else }}
-
-1. Check the Phase field above and refer to itsacoo operator documentation for
-   guidance on the next steps for this concept phase.
-{{- end }}
+> {{.RawConcept}}
 
 ---
-_Generated by coo-cli at {{ .GeneratedAt }}_
+
+## Planning Artifacts
+{{- if or .Artifacts.PRD .Artifacts.HLD .Artifacts.LLD .Artifacts.Epic .Artifacts.Tasks}}
+
+| Artifact                        | Path |
+|---------------------------------|------|
+{{- if .Artifacts.PRD}}
+| PRD (Product Requirements Doc)  | {{.Artifacts.PRD}} |
+{{- end}}
+{{- if .Artifacts.HLD}}
+| HLD (High-Level Design)         | {{.Artifacts.HLD}} |
+{{- end}}
+{{- if .Artifacts.LLD}}
+| LLD (Low-Level Design)          | {{.Artifacts.LLD}} |
+{{- end}}
+{{- if .Artifacts.Epic}}
+| Epic                            | {{.Artifacts.Epic}} |
+{{- end}}
+{{- if .Artifacts.Tasks}}
+| Tasks                           | {{.Artifacts.Tasks}} |
+{{- end}}
+{{- else}}
+
+_No planning artifacts recorded yet._
+{{- end}}
+{{- if .PlanningPRURL}}
+
+**Planning PR:** [#{{.PlanningPRNumber}}]({{.PlanningPRURL}})
+{{- end}}
+
+---
+
+## Sprints
+{{- if .Sprints}}
+
+| Sprint | Type | Phase |
+|--------|------|-------|
+{{- range .Sprints}}
+| {{.Name}} | {{.SprintType}} | {{.Phase}} |
+{{- end}}
+{{- else}}
+
+_No sprints found._
+{{- end}}
+
+---
+
+## Features
+{{- if .Features}}
+
+| Feature | Phase |
+|---------|-------|
+{{- range .Features}}
+| {{.Name}} | {{.Phase}} |
+{{- end}}
+{{- else}}
+
+_No features found._
+{{- end}}
+
+---
+
+## Tasks
+{{- if .Tasks}}
+
+|   | Task | Worker | Priority | Phase |
+|---|------|--------|----------|-------|
+{{- range .Tasks}}
+| {{taskIcon .Phase}} | {{.Name}} | {{.Worker}} | {{.Priority}} | {{.Phase}} |
+{{- end}}
+{{- else}}
+
+_No tasks found._
+{{- end}}
+
+---
+
+## Worker Roster
+{{- if .Workers}}
+
+| Worker | Agent Type | Phase |
+|--------|------------|-------|
+{{- range .Workers}}
+| {{.Name}} | {{.AgentType}} | {{.Phase}} |
+{{- end}}
+{{- else}}
+
+_No workers found._
+{{- end}}
+
+---
+
+## What You Should Do
+{{- if eq .ConceptPhase "Planned"}}
+
+The project is currently in **Planned** phase — planning is complete and awaiting approval.
+
+- Review the planning PR linked above and inspect all planning artifacts in the docs/ folder
+- Check that any GitHub issues created during planning look correct
+- When ready, approve the planning PR to trigger Sprint 1 execution
+{{- else if eq .ConceptPhase "Executing"}}
+
+The project is currently in **Executing** phase — sprint work is underway.
+
+- Review the task list above and pick up any open (⏳) tasks
+- Check worker PRs and provide review feedback where needed
+- Ensure tests pass and code quality standards are met
+- Use ` + "`coo workspace list`" + ` to see other active workspaces
+{{- else}}
+
+The project is currently in **{{.ConceptPhase}}** phase.
+
+- Review the planning artifacts in the docs/ folder
+- Check open GitHub issues to understand the current state
+- Determine the appropriate next steps for this phase
+{{- end}}
+
 `
 
-// templateFuncs are helpers available inside the template.
-var templateFuncs = template.FuncMap{
-	"taskStatus": func(phase string) string {
-		if strings.EqualFold(phase, "completed") || strings.EqualFold(phase, "done") {
-			return "✅"
-		}
-		return "⏳"
-	},
-	"prLink": func(prNumber int64) string {
-		if prNumber == 0 {
-			return "-"
-		}
-		return fmt.Sprintf("#%d", prNumber)
-	},
-}
-
-// templateDataWithTime extends templateData with a generated timestamp field
-// accessible in the template.
-type templateDataWithTime struct {
-	templateData
-	GeneratedAt string
-}
-
-// RenderTemplate converts a HandoffContext into a CLAUDE.md header string.
-func RenderTemplate(hc *HandoffContext) (string, error) {
-	td := buildTemplateData(hc)
-
-	tmpl, err := template.New("handoff").Funcs(templateFuncs).Parse(handoffTemplate)
-	if err != nil {
-		return "", fmt.Errorf("parse handoff template: %w", err)
-	}
-
+// Render executes the CLAUDE.md handoff template against data and returns the
+// rendered string. An error is returned only if template execution fails, which
+// should not happen with well-formed HandoffData.
+func Render(data *HandoffData) (string, error) {
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, templateDataWithTime{
-		templateData: td,
-		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
-	}); err != nil {
-		return "", fmt.Errorf("execute handoff template: %w", err)
+	if err := claudeMDTmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("render handoff template: %w", err)
 	}
-
 	return buf.String(), nil
-}
-
-// buildTemplateData converts a HandoffContext into a templateData struct.
-func buildTemplateData(hc *HandoffContext) templateData {
-	td := templateData{
-		Artifacts: map[string]string{},
-	}
-
-	if hc.Concept != nil {
-		td.ConceptName = hc.Concept.GetName()
-
-		// spec fields
-		td.RawConcept, _, _ = unstructured.NestedString(hc.Concept.Object, "spec", "rawConcept")
-		td.Phase, _, _ = unstructured.NestedString(hc.Concept.Object, "status", "phase")
-		td.Tier, _, _ = unstructured.NestedString(hc.Concept.Object, "status", "complexityAssessment", "tier")
-
-		// Derive repo from affectedProjects[0] if available.
-		projects, _, _ := unstructured.NestedStringSlice(hc.Concept.Object, "spec", "affectedProjects")
-		if len(projects) > 0 {
-			td.Repo = projects[0]
-		}
-	}
-
-	if hc.Plan != nil {
-		// Artifacts map: keys are artifact type names, values are paths/URLs.
-		artifacts, found, _ := unstructured.NestedMap(hc.Plan.Object, "spec", "artifacts")
-		if found {
-			for k, v := range artifacts {
-				if s, ok := v.(string); ok {
-					td.Artifacts[k] = s
-				}
-			}
-		}
-
-		td.PlanningPRURL, _, _ = unstructured.NestedString(hc.Plan.Object, "status", "planningPRURL")
-
-		epicCount, _, _ := unstructured.NestedInt64(hc.Plan.Object, "status", "epicCount")
-		td.EpicCount = epicCount
-
-		featureCount, _, _ := unstructured.NestedInt64(hc.Plan.Object, "status", "featureCount")
-		td.FeatureCount = featureCount
-
-		issueCount, _, _ := unstructured.NestedInt64(hc.Plan.Object, "status", "issueCount")
-		td.IssueCount = issueCount
-
-		td.ROAM, _, _ = unstructured.NestedString(hc.Plan.Object, "status", "roam")
-	}
-
-	for _, s := range hc.Sprints {
-		sprintType, _, _ := unstructured.NestedString(s.Object, "spec", "type")
-		phase, _, _ := unstructured.NestedString(s.Object, "status", "phase")
-		td.Sprints = append(td.Sprints, sprintRow{
-			Name:  s.GetName(),
-			Type:  sprintType,
-			Phase: phase,
-		})
-	}
-
-	for _, f := range hc.Features {
-		phase, _, _ := unstructured.NestedString(f.Object, "status", "phase")
-		td.Features = append(td.Features, featureRow{
-			Name:  f.GetName(),
-			Phase: phase,
-		})
-	}
-
-	for _, t := range hc.Tasks {
-		worker, _, _ := unstructured.NestedString(t.Object, "spec", "worker")
-		priority, _, _ := unstructured.NestedString(t.Object, "spec", "priority")
-		phase, _, _ := unstructured.NestedString(t.Object, "status", "phase")
-		prNumber, _, _ := unstructured.NestedInt64(t.Object, "status", "prNumber")
-		td.Tasks = append(td.Tasks, taskRow{
-			Name:     t.GetName(),
-			Worker:   worker,
-			Priority: priority,
-			Phase:    phase,
-			PRNumber: prNumber,
-		})
-	}
-
-	for _, w := range hc.Workers {
-		agentType, _, _ := unstructured.NestedString(w.Object, "spec", "agentType")
-		phase, _, _ := unstructured.NestedString(w.Object, "status", "phase")
-		td.Workers = append(td.Workers, workerRow{
-			Name:      w.GetName(),
-			AgentType: agentType,
-			Phase:     phase,
-		})
-	}
-
-	return td
 }

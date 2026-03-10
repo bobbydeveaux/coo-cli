@@ -8,27 +8,46 @@ import (
 	"strings"
 	"testing"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 )
 
-// newTestInjector builds an Injector pointed at a test HTTP server.
-func newTestInjector(t *testing.T, serverURL string) *Injector {
-	t.Helper()
-	restCfg := &rest.Config{Host: serverURL}
-	dynClient, err := dynamic.NewForConfig(restCfg)
-	if err != nil {
-		t.Fatalf("create dynamic client: %v", err)
+// fakeObject builds a minimal unstructured object suitable for use as a fake
+// API server response item.
+func fakeObject(apiVersion, kind, name, namespace string, spec, status map[string]interface{}) map[string]interface{} {
+	obj := map[string]interface{}{
+		"apiVersion": apiVersion,
+		"kind":       kind,
+		"metadata": map[string]interface{}{
+			"name":      name,
+			"namespace": namespace,
+		},
 	}
-	return &Injector{
-		dynClient: dynClient,
-		cfg:       ClientConfig{},
-		namespace: cooSystem,
+	if spec != nil {
+		obj["spec"] = spec
+	}
+	if status != nil {
+		obj["status"] = status
+	}
+	return obj
+}
+
+// fakeList wraps items into a list response that the dynamic client can decode.
+func fakeList(apiVersion, kind string, items []map[string]interface{}) map[string]interface{} {
+	raw := make([]interface{}, len(items))
+	for i, item := range items {
+		raw[i] = item
+	}
+	return map[string]interface{}{
+		"apiVersion": apiVersion,
+		"kind":       kind + "List",
+		"metadata":   map[string]interface{}{"resourceVersion": ""},
+		"items":      raw,
 	}
 }
 
-func marshalJSON(t *testing.T, v interface{}) []byte {
+// mustJSON serialises v, fatally failing on error.
+func mustJSON(t *testing.T, v interface{}) []byte {
 	t.Helper()
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -37,236 +56,247 @@ func marshalJSON(t *testing.T, v interface{}) []byte {
 	return b
 }
 
-// conceptObj returns a minimal COOConcept map suitable for JSON responses.
-func conceptObj(name, phase, tier, rawConcept string, projects []string) map[string]interface{} {
-	return map[string]interface{}{
-		"apiVersion": cooAPIGroup + "/" + cooAPIVersion,
-		"kind":       "COOConcept",
-		"metadata": map[string]interface{}{
-			"name":      name,
-			"namespace": cooSystem,
+// TestFetchHandoffData_HappyPath verifies that FetchHandoffData correctly
+// populates HandoffData from a fake Kubernetes API server.
+func TestFetchHandoffData_HappyPath(t *testing.T) {
+	const (
+		systemNS    = "coo-system"
+		conceptName = "test-concept"
+		conceptNS   = "coo-test-concept"
+	)
+
+	concept := fakeObject("coo.itsacoo.com/v1alpha1", "COOConcept", conceptName, systemNS,
+		map[string]interface{}{
+			"rawConcept":       "Build a login page.",
+			"affectedProjects": []interface{}{"owner/my-repo"},
 		},
-		"spec": map[string]interface{}{
-			"rawConcept":       rawConcept,
-			"affectedProjects": toIfaceSlice(projects),
-		},
-		"status": map[string]interface{}{
-			"phase": phase,
+		map[string]interface{}{
+			"phase": "Executing",
 			"complexityAssessment": map[string]interface{}{
-				"tier": tier,
+				"tier": "M",
 			},
 		},
-	}
-}
+	)
 
-// planObj returns a minimal COOPlan map suitable for JSON responses.
-func planObj(name, ns, prURL string) map[string]interface{} {
-	return map[string]interface{}{
-		"apiVersion": cooAPIGroup + "/" + cooAPIVersion,
-		"kind":       "COOPlan",
-		"metadata": map[string]interface{}{
-			"name":      name,
-			"namespace": ns,
-		},
-		"spec": map[string]interface{}{
+	plan := fakeObject("coo.itsacoo.com/v1alpha1", "COOPlan", "test-concept-plan", conceptNS,
+		map[string]interface{}{
 			"artifacts": map[string]interface{}{
-				"prd": "docs/PRD.md",
+				"prd":   "docs/PRD.md",
+				"hld":   "docs/HLD.md",
+				"lld":   "docs/LLD.md",
+				"epic":  "docs/epic.yaml",
+				"tasks": "docs/tasks.yaml",
 			},
 		},
-		"status": map[string]interface{}{
-			"planningPRURL": prURL,
-			"epicCount":     int64(2),
+		map[string]interface{}{
+			"planningPRURL":    "https://github.com/owner/repo/pull/10",
+			"planningPRNumber": int64(10),
+			"epicCount":        int64(1),
+			"featureCount":     int64(3),
+			"issueCount":       int64(6),
 		},
-	}
-}
+	)
 
-// listObj wraps items in a Kubernetes list response envelope.
-func listObj(kind string, items []map[string]interface{}) map[string]interface{} {
-	ifaces := make([]interface{}, len(items))
-	for i, v := range items {
-		ifaces[i] = v
-	}
-	return map[string]interface{}{
-		"apiVersion": cooAPIGroup + "/" + cooAPIVersion,
-		"kind":       kind,
-		"metadata":   map[string]interface{}{"resourceVersion": ""},
-		"items":      ifaces,
-	}
-}
+	sprint := fakeObject("coo.itsacoo.com/v1alpha1", "COOSprint", "sprint-1", conceptNS,
+		map[string]interface{}{"type": "feature"},
+		map[string]interface{}{"phase": "Executing", "iteration": int64(1)},
+	)
 
-func toIfaceSlice(s []string) []interface{} {
-	out := make([]interface{}, len(s))
-	for i, v := range s {
-		out[i] = v
-	}
-	return out
-}
+	feature := fakeObject("coo.itsacoo.com/v1alpha1", "COOFeature", "feat-login", conceptNS,
+		nil,
+		map[string]interface{}{"phase": "InProgress"},
+	)
 
-// TestFetchContextSuccess verifies that FetchContext populates HandoffContext
-// when all resources are returned by the fake API server.
-func TestFetchContextSuccess(t *testing.T) {
-	conceptName := "my-concept"
-	conceptNS := "coo-" + conceptName
+	task := fakeObject("coo.itsacoo.com/v1alpha1", "COOTask", "task-1", conceptNS,
+		map[string]interface{}{"worker": "backend-worker", "priority": "high"},
+		map[string]interface{}{"phase": "Pending", "prNumber": int64(0)},
+	)
+
+	worker := fakeObject("coo.itsacoo.com/v1alpha1", "COOWorker", "backend-worker", conceptNS,
+		map[string]interface{}{"agentType": "backend-engineer"},
+		map[string]interface{}{"phase": "Active"},
+	)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		path := r.URL.Path
 
 		switch {
-		// GET /apis/coo.../coo-system/cooconcepts/my-concept
 		case strings.Contains(path, "cooconcepts/"+conceptName):
-			w.Write(marshalJSON(t, conceptObj(conceptName, "Executing", "L", "Build it", []string{"owner/repo"})))
-
-		// LIST /apis/coo.../coo-concept/cooplans
-		case strings.Contains(path, conceptNS) && strings.Contains(path, "cooplans"):
-			w.Write(marshalJSON(t, listObj("COOPlanList", []map[string]interface{}{
-				planObj("plan-1", conceptNS, "https://github.com/pr/1"),
-			})))
-
-		// LIST any other resource in the concept namespace
-		case strings.Contains(path, conceptNS):
-			w.Write(marshalJSON(t, listObj("List", nil)))
-
+			_, _ = w.Write(mustJSON(t, concept))
+		case strings.Contains(path, "cooplans"):
+			_, _ = w.Write(mustJSON(t, fakeList("coo.itsacoo.com/v1alpha1", "COOPlan", []map[string]interface{}{plan})))
+		case strings.Contains(path, "coosprints"):
+			_, _ = w.Write(mustJSON(t, fakeList("coo.itsacoo.com/v1alpha1", "COOSprint", []map[string]interface{}{sprint})))
+		case strings.Contains(path, "coofeatures"):
+			_, _ = w.Write(mustJSON(t, fakeList("coo.itsacoo.com/v1alpha1", "COOFeature", []map[string]interface{}{feature})))
+		case strings.Contains(path, "cootasks"):
+			_, _ = w.Write(mustJSON(t, fakeList("coo.itsacoo.com/v1alpha1", "COOTask", []map[string]interface{}{task})))
+		case strings.Contains(path, "cooworkers"):
+			_, _ = w.Write(mustJSON(t, fakeList("coo.itsacoo.com/v1alpha1", "COOWorker", []map[string]interface{}{worker})))
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer srv.Close()
 
-	inj := newTestInjector(t, srv.URL)
-	hc, err := inj.FetchContext(context.Background(), conceptName)
+	dynClient, err := dynamic.NewForConfig(&rest.Config{Host: srv.URL})
 	if err != nil {
-		t.Fatalf("FetchContext returned unexpected error: %v", err)
+		t.Fatalf("create dynamic client: %v", err)
 	}
 
-	if hc.Concept == nil {
-		t.Fatal("expected Concept to be non-nil")
+	data, err := FetchHandoffData(context.Background(), dynClient, systemNS, conceptName)
+	if err != nil {
+		t.Fatalf("FetchHandoffData returned unexpected error: %v", err)
 	}
-	if hc.Concept.GetName() != conceptName {
-		t.Errorf("concept name = %q; want %q", hc.Concept.GetName(), conceptName)
+
+	// Concept fields.
+	if data.ConceptName != conceptName {
+		t.Errorf("ConceptName = %q, want %q", data.ConceptName, conceptName)
 	}
-	if hc.Plan == nil {
-		t.Fatal("expected Plan to be non-nil")
+	if data.RawConcept != "Build a login page." {
+		t.Errorf("RawConcept = %q", data.RawConcept)
 	}
-	prURL, _, _ := unstructured.NestedString(hc.Plan.Object, "status", "planningPRURL")
-	if prURL != "https://github.com/pr/1" {
-		t.Errorf("planningPRURL = %q; want https://github.com/pr/1", prURL)
+	if data.ConceptPhase != "Executing" {
+		t.Errorf("ConceptPhase = %q, want Executing", data.ConceptPhase)
+	}
+	if data.ComplexityTier != "M" {
+		t.Errorf("ComplexityTier = %q, want M", data.ComplexityTier)
+	}
+	if data.Repo != "owner/my-repo" {
+		t.Errorf("Repo = %q, want owner/my-repo", data.Repo)
+	}
+
+	// Plan fields.
+	if data.Artifacts.PRD != "docs/PRD.md" {
+		t.Errorf("Artifacts.PRD = %q, want docs/PRD.md", data.Artifacts.PRD)
+	}
+	if data.PlanningPRURL != "https://github.com/owner/repo/pull/10" {
+		t.Errorf("PlanningPRURL = %q", data.PlanningPRURL)
+	}
+	if data.FeatureCount != 3 {
+		t.Errorf("FeatureCount = %d, want 3", data.FeatureCount)
+	}
+
+	// Sprints.
+	if len(data.Sprints) != 1 {
+		t.Fatalf("len(Sprints) = %d, want 1", len(data.Sprints))
+	}
+	if data.Sprints[0].Name != "sprint-1" || data.Sprints[0].Phase != "Executing" {
+		t.Errorf("Sprints[0] = %+v", data.Sprints[0])
+	}
+
+	// Features.
+	if len(data.Features) != 1 || data.Features[0].Name != "feat-login" {
+		t.Errorf("Features = %+v", data.Features)
+	}
+
+	// Tasks.
+	if len(data.Tasks) != 1 || data.Tasks[0].Worker != "backend-worker" {
+		t.Errorf("Tasks = %+v", data.Tasks)
+	}
+
+	// Workers.
+	if len(data.Workers) != 1 || data.Workers[0].AgentType != "backend-engineer" {
+		t.Errorf("Workers = %+v", data.Workers)
 	}
 }
 
-// TestFetchContextConceptNotFound verifies that a 404 concept causes an error.
-func TestFetchContextConceptNotFound(t *testing.T) {
+// TestFetchHandoffData_MissingConcept verifies that a missing COOConcept
+// returns an error (it is a required resource).
+func TestFetchHandoffData_MissingConcept(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	}))
 	defer srv.Close()
 
-	inj := newTestInjector(t, srv.URL)
-	_, err := inj.FetchContext(context.Background(), "missing-concept")
+	dynClient, _ := dynamic.NewForConfig(&rest.Config{Host: srv.URL})
+
+	_, err := FetchHandoffData(context.Background(), dynClient, "coo-system", "missing-concept")
 	if err == nil {
-		t.Fatal("expected error for missing concept, got nil")
+		t.Fatal("expected error for missing COOConcept, got nil")
+	}
+	if !strings.Contains(err.Error(), "COOConcept") {
+		t.Errorf("error should mention COOConcept, got: %v", err)
 	}
 }
 
-// TestFetchPlanEmpty verifies that an empty plan list results in nil Plan.
-func TestFetchPlanEmpty(t *testing.T) {
-	conceptName := "no-plan"
-	conceptNS := "coo-" + conceptName
+// TestFetchHandoffData_PartialData verifies that missing plan/sprints/etc. are
+// silently tolerated — only the concept is required.
+func TestFetchHandoffData_PartialData(t *testing.T) {
+	const conceptName = "partial-concept"
+	concept := fakeObject("coo.itsacoo.com/v1alpha1", "COOConcept", conceptName, "coo-system",
+		map[string]interface{}{"rawConcept": "Partial concept."},
+		map[string]interface{}{"phase": "Planned"},
+	)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		path := r.URL.Path
-		switch {
-		case strings.Contains(path, "cooconcepts/"+conceptName):
-			w.Write(marshalJSON(t, conceptObj(conceptName, "Planned", "M", "do something", nil)))
-		case strings.Contains(path, conceptNS):
-			w.Write(marshalJSON(t, listObj("List", nil)))
-		default:
-			http.NotFound(w, r)
+		if strings.Contains(r.URL.Path, "cooconcepts/"+conceptName) {
+			_, _ = w.Write(mustJSON(t, concept))
+			return
 		}
+		// Return 404 for everything else (plan, sprints, etc.).
+		http.NotFound(w, r)
 	}))
 	defer srv.Close()
 
-	inj := newTestInjector(t, srv.URL)
-	hc, err := inj.FetchContext(context.Background(), conceptName)
+	dynClient, _ := dynamic.NewForConfig(&rest.Config{Host: srv.URL})
+
+	data, err := FetchHandoffData(context.Background(), dynClient, "coo-system", conceptName)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("FetchHandoffData should not fail with partial data: %v", err)
 	}
-	if hc.Plan != nil {
-		t.Error("expected Plan to be nil when no COOPlan exists")
+	if data.ConceptPhase != "Planned" {
+		t.Errorf("ConceptPhase = %q, want Planned", data.ConceptPhase)
+	}
+	if len(data.Sprints) != 0 || len(data.Tasks) != 0 {
+		t.Errorf("expected empty slices for missing resources")
 	}
 }
 
-// TestKubectlArgsWithFlags verifies kubeconfig/context are prepended.
-func TestKubectlArgsWithFlags(t *testing.T) {
-	inj := &Injector{
-		cfg: ClientConfig{
-			Kubeconfig:  "/home/user/.kube/config",
-			KubeContext: "my-ctx",
+// TestKubectlExecArgs verifies the helper builds the expected argument order.
+func TestKubectlExecArgs(t *testing.T) {
+	cases := []struct {
+		name       string
+		kubeconfig string
+		kubeCtx    string
+		wantPrefix []string
+	}{
+		{
+			name:       "no flags",
+			wantPrefix: []string{"exec", "-i", "my-pod"},
+		},
+		{
+			name:       "kubeconfig only",
+			kubeconfig: "/home/user/.kube/config",
+			wantPrefix: []string{"--kubeconfig", "/home/user/.kube/config", "exec"},
+		},
+		{
+			name:    "context only",
+			kubeCtx: "my-ctx",
+			wantPrefix: []string{"--context", "my-ctx", "exec"},
+		},
+		{
+			name:       "both flags",
+			kubeconfig: "/tmp/kc",
+			kubeCtx:    "ctx1",
+			// context is prepended last so it appears first.
+			wantPrefix: []string{"--context", "ctx1", "--kubeconfig", "/tmp/kc", "exec"},
 		},
 	}
 
-	got := inj.kubectlArgs([]string{"exec", "my-pod"})
-	want := []string{"--kubeconfig", "/home/user/.kube/config", "--context", "my-ctx", "exec", "my-pod"}
-
-	if len(got) != len(want) {
-		t.Fatalf("kubectlArgs len = %d; want %d\ngot: %v\nwant: %v", len(got), len(want), got, want)
-	}
-	for i, v := range want {
-		if got[i] != v {
-			t.Errorf("kubectlArgs[%d] = %q; want %q", i, got[i], v)
-		}
-	}
-}
-
-// TestKubectlArgsNoFlags verifies no extra args when config is empty.
-func TestKubectlArgsNoFlags(t *testing.T) {
-	inj := &Injector{cfg: ClientConfig{}}
-	got := inj.kubectlArgs([]string{"exec", "my-pod"})
-	if len(got) != 2 {
-		t.Fatalf("expected 2 args, got %d: %v", len(got), got)
-	}
-}
-
-// TestGVRValues confirms the package-level GVR variables have the correct values.
-func TestGVRValues(t *testing.T) {
-	cases := []struct {
-		name     string
-		resource string
-		want     string
-	}{
-		{"concept", conceptGVR.Resource, "cooconcepts"},
-		{"plan", planGVR.Resource, "cooplans"},
-		{"sprint", sprintGVR.Resource, "coosprints"},
-		{"feature", featureGVR.Resource, "coofeatures"},
-		{"task", taskGVR.Resource, "cootasks"},
-		{"worker", workerGVR.Resource, "cooworkers"},
-	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.resource != tc.want {
-				t.Errorf("resource = %q; want %q", tc.resource, tc.want)
+			args := kubectlExecArgs("my-pod", "coo-system", tc.kubeconfig, tc.kubeCtx, "bash", "-c", "echo hi")
+			for i, want := range tc.wantPrefix {
+				if i >= len(args) {
+					t.Fatalf("args too short: %v", args)
+				}
+				if args[i] != want {
+					t.Errorf("args[%d] = %q, want %q (full args: %v)", i, args[i], want, args)
+				}
 			}
 		})
-	}
-
-	for _, gvr := range []string{
-		conceptGVR.Group, planGVR.Group, sprintGVR.Group,
-		featureGVR.Group, taskGVR.Group, workerGVR.Group,
-	} {
-		if gvr != cooAPIGroup {
-			t.Errorf("GVR group = %q; want %q", gvr, cooAPIGroup)
-		}
-	}
-}
-
-// TestNewInjectorBadKubeconfig verifies NewInjector fails with a bad kubeconfig.
-func TestNewInjectorBadKubeconfig(t *testing.T) {
-	t.Setenv("KUBECONFIG", "/nonexistent/kubeconfig")
-	t.Setenv("HOME", "/nonexistent")
-
-	_, err := NewInjector(ClientConfig{Kubeconfig: "/nonexistent/kubeconfig"})
-	if err == nil {
-		t.Fatal("expected error for nonexistent kubeconfig")
 	}
 }

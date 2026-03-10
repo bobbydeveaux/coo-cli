@@ -1,19 +1,19 @@
 {
-  "prTitle": "feat: implement internal/handoff package for CRD resource fetching and CLAUDE.md injection",
-  "prBody": "## Summary\n\n- Implements `internal/handoff/context.go`: `Injector` type that fetches all COO CRD resources (COOConcept, COOPlan, COOSprints, COOFeatures, COOTasks, COOWorkers) from the itsacoo operator via the dynamic Kubernetes client\n- Implements `internal/handoff/template.go`: `RenderTemplate` converts a `HandoffContext` into a formatted CLAUDE.md header with project info, artifacts table, sprint/feature/task/worker summaries, and phase-specific guidance\n- `InjectIntoPod` wires fetch+render+inject: prepends the rendered header to `/workspace/CLAUDE.md` in the target pod via a single-quoted heredoc shell script executed through `kubectl exec`\n- Full unit test coverage using `httptest.NewServer` (consistent with existing codebase patterns) for CRD fetching, GVR validation, `kubectlArgs`, and template rendering\n\nCloses #19",
+  "prTitle": "feat: implement handoff template rendering and pod CLAUDE.md injection",
+  "prBody": "## Summary\n\nImplements the `coo-cli-workspace-feat-handoff-injection` feature (Sprint 4) — the CLAUDE.md context injection system for handoff-mode workspaces.\n\n### What was implemented\n\n**`internal/handoff/context.go`**\n- `HandoffData` struct and sub-types (`ArtifactPaths`, `SprintInfo`, `FeatureInfo`, `TaskInfo`, `WorkerInfo`)\n- `FetchHandoffData(ctx, dynamicClient, systemNS, conceptName)` — queries the k8s API for all COO CRDs (COOConcept, COOPlan, COOSprints, COOFeatures, COOTasks, COOWorkers) using the dynamic client. COOConcept is required; all other resources are best-effort (errors silently skipped so partial data still produces a useful template)\n- `InjectCLAUDEMD(content, podName, namespace, ...)` — streams rendered content into `/tmp/coo-handoff.md` via `kubectl exec -i` stdin, then runs a shell script to back up the existing `/workspace/CLAUDE.md` to `.original`, write the new header, and append the historical content\n- `extractInt64` helper handles both `int64` and `float64` JSON number types from the k8s API\n\n**`internal/handoff/template.go`**\n- Go `text/template` rendering of the CLAUDE.md handoff header\n- `Render(data *HandoffData) (string, error)` — renders all required sections: warning header, itsacoo explanation, project metadata, planning artifacts table, sprint/feature/task/worker tables, and phase-specific guidance (Planned → review planning PR; Executing → pick up open tasks; other → generic guidance)\n- `taskIcon` template func maps task phase to ✅ (Completed/Done/Merged) or ⏳\n\n**`internal/runtime/k8s.go`**\n- `CreateWorkspace` now captures the pod name from `waitForReady` and calls `injectHandoffContext` when mode is \"handoff\"\n- Injection failure is non-fatal: logs a warning and continues to the exec session\n\n### Tests\n- `internal/handoff/template_test.go` — 9 tests covering header rendering, concept/phase output, task icons, artifact paths, empty-list fallbacks, and workers\n- `internal/handoff/context_test.go` — tests for `FetchHandoffData` happy path (fake HTTP server), missing concept error, partial data tolerance, and `kubectlExecArgs` argument ordering\n\nCloses #20",
   "testsPass": true,
   "filesChanged": [
     "internal/handoff/context.go",
     "internal/handoff/template.go",
     "internal/handoff/context_test.go",
     "internal/handoff/template_test.go",
-    "internal/handoff/testhelpers_test.go"
+    "internal/runtime/k8s.go"
   ],
   "docsUpdated": [],
   "docsReviewed": [
-    "docs/concepts/coo-cli-workspace/LLD.md",
+    "README.md",
     "docs/concepts/coo-cli-workspace/HLD.md",
-    "README.md"
+    "docs/concepts/coo-cli-workspace/LLD.md"
   ],
-  "completedTasks": [1, 2, 3, 4]
+  "completedTasks": [1, 2]
 }

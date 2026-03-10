@@ -1,254 +1,286 @@
-// Package handoff implements the COO handoff context injection for workspace pods.
-// It fetches all relevant CRD resources from the itsacoo operator, renders a
-// CLAUDE.md header, and prepends it to the existing /workspace/CLAUDE.md in
-// the target pod.
+// Package handoff implements CLAUDE.md context injection for handoff-mode
+// workspaces. It fetches operator CRD state (COOConcept, COOPlan, COOSprints,
+// COOFeatures, COOTasks, COOWorkers) and renders them into a structured
+// CLAUDE.md that is prepended to /workspace/CLAUDE.md inside the pod.
 package handoff
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 const (
-	cooAPIGroup   = "coo.itsacoo.com"
-	cooAPIVersion = "v1alpha1"
-	cooSystem     = "coo-system"
+	cooAPIGroup      = "coo.itsacoo.com"
+	cooAPIVersion    = "v1alpha1"
+	workspaceContainer = "workspace"
 )
 
-// GVRs for all COO resource types used during handoff.
 var (
-	conceptGVR = schema.GroupVersionResource{Group: cooAPIGroup, Version: cooAPIVersion, Resource: "cooconcepts"}
-	planGVR    = schema.GroupVersionResource{Group: cooAPIGroup, Version: cooAPIVersion, Resource: "cooplans"}
-	sprintGVR  = schema.GroupVersionResource{Group: cooAPIGroup, Version: cooAPIVersion, Resource: "coosprints"}
-	featureGVR = schema.GroupVersionResource{Group: cooAPIGroup, Version: cooAPIVersion, Resource: "coofeatures"}
-	taskGVR    = schema.GroupVersionResource{Group: cooAPIGroup, Version: cooAPIVersion, Resource: "cootasks"}
-	workerGVR  = schema.GroupVersionResource{Group: cooAPIGroup, Version: cooAPIVersion, Resource: "cooworkers"}
+	cooConceptGVR = schema.GroupVersionResource{Group: cooAPIGroup, Version: cooAPIVersion, Resource: "cooconcepts"}
+	cooPlanGVR    = schema.GroupVersionResource{Group: cooAPIGroup, Version: cooAPIVersion, Resource: "cooplans"}
+	cooSprintGVR  = schema.GroupVersionResource{Group: cooAPIGroup, Version: cooAPIVersion, Resource: "coosprints"}
+	cooFeatureGVR = schema.GroupVersionResource{Group: cooAPIGroup, Version: cooAPIVersion, Resource: "coofeatures"}
+	cooTaskGVR    = schema.GroupVersionResource{Group: cooAPIGroup, Version: cooAPIVersion, Resource: "cootasks"}
+	cooWorkerGVR  = schema.GroupVersionResource{Group: cooAPIGroup, Version: cooAPIVersion, Resource: "cooworkers"}
 )
 
-// ClientConfig holds the parameters needed to build a Kubernetes client.
-type ClientConfig struct {
-	Kubeconfig  string
-	KubeContext string
-	Namespace   string
+// ArtifactPaths holds file paths to the planning documents from COOPlan.spec.artifacts.
+type ArtifactPaths struct {
+	PRD   string
+	HLD   string
+	LLD   string
+	Epic  string
+	Tasks string
 }
 
-// HandoffContext holds all CRD data fetched for a given concept.
-type HandoffContext struct {
-	Concept  *unstructured.Unstructured
-	Plan     *unstructured.Unstructured
-	Sprints  []unstructured.Unstructured
-	Features []unstructured.Unstructured
-	Tasks    []unstructured.Unstructured
-	Workers  []unstructured.Unstructured
+// SprintInfo is a summary of a single COOSprint.
+type SprintInfo struct {
+	Name       string
+	Phase      string
+	Iteration  int64
+	SprintType string
 }
 
-// Injector fetches CRD data and injects the rendered CLAUDE.md into a pod.
-type Injector struct {
-	dynClient   dynamic.Interface
-	cfg         ClientConfig
-	namespace   string
+// FeatureInfo is a summary of a single COOFeature.
+type FeatureInfo struct {
+	Name  string
+	Phase string
 }
 
-// NewInjector creates an Injector using the provided client configuration.
-func NewInjector(cfg ClientConfig) (*Injector, error) {
-	dynClient, err := buildDynamicClient(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("build k8s client for handoff: %w", err)
+// TaskInfo is a summary of a single COOTask.
+type TaskInfo struct {
+	Name     string
+	Worker   string
+	Priority string
+	Phase    string
+	PRNumber int64
+}
+
+// WorkerInfo is a summary of a single COOWorker.
+type WorkerInfo struct {
+	Name      string
+	AgentType string
+	Phase     string
+}
+
+// HandoffData is the complete data set passed to the CLAUDE.md template.
+// It is populated by FetchHandoffData from the operator CRDs.
+type HandoffData struct {
+	// Concept information (from COOConcept in coo-system namespace).
+	ConceptName     string
+	RawConcept      string
+	AffectedProjects []string
+	ConceptPhase    string
+	ComplexityTier  string
+	Repo            string // first entry from AffectedProjects, if available
+
+	// Plan information (from COOPlan in coo-<concept> namespace).
+	Artifacts        ArtifactPaths
+	PlanningPRURL    string
+	PlanningPRNumber int64
+	EpicCount        int64
+	FeatureCount     int64
+	IssueCount       int64
+
+	// Workload summaries (from coo-<concept> namespace).
+	Sprints  []SprintInfo
+	Features []FeatureInfo
+	Tasks    []TaskInfo
+	Workers  []WorkerInfo
+}
+
+// extractInt64 retrieves an integer from an unstructured object field,
+// handling both int64 (from typed serialisation) and float64 (from standard
+// encoding/json — all JSON numbers decode as float64) gracefully.
+func extractInt64(obj map[string]interface{}, fields ...string) int64 {
+	val, found, _ := unstructured.NestedFieldNoCopy(obj, fields...)
+	if !found {
+		return 0
 	}
-
-	ns := cfg.Namespace
-	if ns == "" {
-		ns = cooSystem
+	switch v := val.(type) {
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	case int32:
+		return int64(v)
+	case int:
+		return int64(v)
 	}
-
-	return &Injector{
-		dynClient: dynClient,
-		cfg:       cfg,
-		namespace: ns,
-	}, nil
+	return 0
 }
 
-// FetchContext fetches all CRD resources for the named concept and returns a
-// HandoffContext populated with the fetched data.
-func (inj *Injector) FetchContext(ctx context.Context, conceptName string) (*HandoffContext, error) {
-	concept, err := inj.fetchConcept(ctx, conceptName)
-	if err != nil {
-		return nil, err
-	}
-
+// FetchHandoffData queries the Kubernetes API for all CRD objects needed to
+// render the handoff CLAUDE.md. systemNS is the namespace where COOConcept
+// lives (typically "coo-system"); conceptName is the COOConcept name.
+//
+// Non-critical fetch errors (plan, sprints, features, tasks, workers) are
+// silently swallowed so that partial data still produces a useful template
+// rather than failing the entire workspace creation.
+func FetchHandoffData(ctx context.Context, client dynamic.Interface, systemNS, conceptName string) (*HandoffData, error) {
+	data := &HandoffData{ConceptName: conceptName}
 	conceptNS := "coo-" + conceptName
 
-	plan, err := inj.fetchPlan(ctx, conceptNS)
+	// COOConcept — required; fail the whole operation if missing.
+	concept, err := client.Resource(cooConceptGVR).Namespace(systemNS).Get(ctx, conceptName, metav1.GetOptions{})
 	if err != nil {
-		// Plan may not exist yet; proceed without it.
-		fmt.Fprintf(os.Stderr, "warning: could not fetch COOPlan in %s: %v\n", conceptNS, err)
+		return nil, fmt.Errorf("get COOConcept %s/%s: %w", systemNS, conceptName, err)
 	}
 
-	sprints, err := inj.dynClient.Resource(sprintGVR).Namespace(conceptNS).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not list COOSprints in %s: %v\n", conceptNS, err)
+	data.RawConcept, _, _ = unstructured.NestedString(concept.Object, "spec", "rawConcept")
+	data.ConceptPhase, _, _ = unstructured.NestedString(concept.Object, "status", "phase")
+	data.ComplexityTier, _, _ = unstructured.NestedString(concept.Object, "status", "complexityAssessment", "tier")
+	data.AffectedProjects, _, _ = unstructured.NestedStringSlice(concept.Object, "spec", "affectedProjects")
+	if len(data.AffectedProjects) > 0 {
+		data.Repo = data.AffectedProjects[0]
 	}
 
-	features, err := inj.dynClient.Resource(featureGVR).Namespace(conceptNS).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not list COOFeatures in %s: %v\n", conceptNS, err)
+	// COOPlan — best-effort; take the first plan found in the concept namespace.
+	plans, err := client.Resource(cooPlanGVR).Namespace(conceptNS).List(ctx, metav1.ListOptions{})
+	if err == nil && len(plans.Items) > 0 {
+		plan := plans.Items[0]
+		prd, _, _ := unstructured.NestedString(plan.Object, "spec", "artifacts", "prd")
+		hld, _, _ := unstructured.NestedString(plan.Object, "spec", "artifacts", "hld")
+		lld, _, _ := unstructured.NestedString(plan.Object, "spec", "artifacts", "lld")
+		epic, _, _ := unstructured.NestedString(plan.Object, "spec", "artifacts", "epic")
+		tasks, _, _ := unstructured.NestedString(plan.Object, "spec", "artifacts", "tasks")
+		data.Artifacts = ArtifactPaths{PRD: prd, HLD: hld, LLD: lld, Epic: epic, Tasks: tasks}
+
+		data.PlanningPRURL, _, _ = unstructured.NestedString(plan.Object, "status", "planningPRURL")
+		data.PlanningPRNumber = extractInt64(plan.Object, "status", "planningPRNumber")
+		data.EpicCount = extractInt64(plan.Object, "status", "epicCount")
+		data.FeatureCount = extractInt64(plan.Object, "status", "featureCount")
+		data.IssueCount = extractInt64(plan.Object, "status", "issueCount")
 	}
 
-	tasks, err := inj.dynClient.Resource(taskGVR).Namespace(conceptNS).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not list COOTasks in %s: %v\n", conceptNS, err)
+	// COOSprints — best-effort.
+	sprints, err := client.Resource(cooSprintGVR).Namespace(conceptNS).List(ctx, metav1.ListOptions{})
+	if err == nil {
+		for _, s := range sprints.Items {
+			phase, _, _ := unstructured.NestedString(s.Object, "status", "phase")
+			iter := extractInt64(s.Object, "status", "iteration")
+			sType, _, _ := unstructured.NestedString(s.Object, "spec", "type")
+			data.Sprints = append(data.Sprints, SprintInfo{
+				Name:       s.GetName(),
+				Phase:      phase,
+				Iteration:  iter,
+				SprintType: sType,
+			})
+		}
 	}
 
-	workers, err := inj.dynClient.Resource(workerGVR).Namespace(conceptNS).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not list COOWorkers in %s: %v\n", conceptNS, err)
+	// COOFeatures — best-effort.
+	features, err := client.Resource(cooFeatureGVR).Namespace(conceptNS).List(ctx, metav1.ListOptions{})
+	if err == nil {
+		for _, f := range features.Items {
+			phase, _, _ := unstructured.NestedString(f.Object, "status", "phase")
+			data.Features = append(data.Features, FeatureInfo{
+				Name:  f.GetName(),
+				Phase: phase,
+			})
+		}
 	}
 
-	hc := &HandoffContext{
-		Concept: concept,
-		Plan:    plan,
-	}
-	if sprints != nil {
-		hc.Sprints = sprints.Items
-	}
-	if features != nil {
-		hc.Features = features.Items
-	}
-	if tasks != nil {
-		hc.Tasks = tasks.Items
-	}
-	if workers != nil {
-		hc.Workers = workers.Items
+	// COOTasks — best-effort.
+	taskList, err := client.Resource(cooTaskGVR).Namespace(conceptNS).List(ctx, metav1.ListOptions{})
+	if err == nil {
+		for _, t := range taskList.Items {
+			phase, _, _ := unstructured.NestedString(t.Object, "status", "phase")
+			worker, _, _ := unstructured.NestedString(t.Object, "spec", "worker")
+			priority, _, _ := unstructured.NestedString(t.Object, "spec", "priority")
+			prNum := extractInt64(t.Object, "status", "prNumber")
+			data.Tasks = append(data.Tasks, TaskInfo{
+				Name:     t.GetName(),
+				Worker:   worker,
+				Priority: priority,
+				Phase:    phase,
+				PRNumber: prNum,
+			})
+		}
 	}
 
-	return hc, nil
+	// COOWorkers — best-effort.
+	workers, err := client.Resource(cooWorkerGVR).Namespace(conceptNS).List(ctx, metav1.ListOptions{})
+	if err == nil {
+		for _, w := range workers.Items {
+			phase, _, _ := unstructured.NestedString(w.Object, "status", "phase")
+			agentType, _, _ := unstructured.NestedString(w.Object, "spec", "agentType")
+			data.Workers = append(data.Workers, WorkerInfo{
+				Name:      w.GetName(),
+				AgentType: agentType,
+				Phase:     phase,
+			})
+		}
+	}
+
+	return data, nil
 }
 
-// InjectIntoPod renders the CLAUDE.md header and prepends it to
-// /workspace/CLAUDE.md inside the named pod/container via kubectl exec.
-func (inj *Injector) InjectIntoPod(ctx context.Context, podName, containerName, conceptName string) error {
-	hc, err := inj.FetchContext(ctx, conceptName)
-	if err != nil {
-		return fmt.Errorf("fetch handoff context: %w", err)
-	}
-
-	rendered, err := RenderTemplate(hc)
-	if err != nil {
-		return fmt.Errorf("render handoff template: %w", err)
-	}
-
-	return inj.prependCLAUDEMD(podName, containerName, rendered)
-}
-
-// fetchConcept retrieves the named COOConcept from coo-system.
-func (inj *Injector) fetchConcept(ctx context.Context, name string) (*unstructured.Unstructured, error) {
-	obj, err := inj.dynClient.Resource(conceptGVR).Namespace(cooSystem).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("get COOConcept %q in %s: %w", name, cooSystem, err)
-	}
-	return obj, nil
-}
-
-// fetchPlan retrieves the first COOPlan found in the given concept namespace.
-// The COO operator creates exactly one COOPlan per concept namespace.
-func (inj *Injector) fetchPlan(ctx context.Context, conceptNS string) (*unstructured.Unstructured, error) {
-	list, err := inj.dynClient.Resource(planGVR).Namespace(conceptNS).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("list COOPlans in %s: %w", conceptNS, err)
-	}
-	if len(list.Items) == 0 {
-		return nil, fmt.Errorf("no COOPlan found in %s", conceptNS)
-	}
-	return &list.Items[0], nil
-}
-
-// prependCLAUDEMD prepends the rendered header to /workspace/CLAUDE.md inside
-// the pod by running a short shell script via kubectl exec.
+// InjectCLAUDEMD writes content to /workspace/CLAUDE.md inside the named pod.
 //
-// Shell script logic:
-//  1. If /workspace/CLAUDE.md exists, copy it to CLAUDE.md.original
-//  2. Write the new header as CLAUDE.md
-//  3. Append a separator and the original content (if any)
-//
-// The single-quoted heredoc (<<'HANDOFF_EOF') is used so that the rendered
-// header is written literally without any shell variable expansion.
-func (inj *Injector) prependCLAUDEMD(podName, containerName, header string) error {
-	shellCmd := fmt.Sprintf(`
+// Injection flow:
+//  1. Stream content to /tmp/coo-handoff.md via kubectl exec stdin.
+//  2. Run a shell script that:
+//     - Moves /workspace/CLAUDE.md → /workspace/CLAUDE.md.original (if present).
+//     - Writes /tmp/coo-handoff.md as the new /workspace/CLAUDE.md.
+//     - Appends a separator + historical-reference note + original content.
+//     - Removes /tmp/coo-handoff.md.
+func InjectCLAUDEMD(content, podName, namespace, kubeconfig, kubeContext string) error {
+	// Step 1: stream the rendered content into a temp file in the pod.
+	writeArgs := kubectlExecArgs(podName, namespace, kubeconfig, kubeContext,
+		"bash", "-c", "cat > /tmp/coo-handoff.md",
+	)
+	writeCmd := exec.Command("kubectl", writeArgs...)
+	writeCmd.Stdin = strings.NewReader(content)
+	if out, err := writeCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("stream handoff content to pod: %w\n%s", err, string(out))
+	}
+
+	// Step 2: atomically merge the handoff front-matter with any existing CLAUDE.md.
+	const mergeScript = `
 set -e
-ORIG=/workspace/CLAUDE.md
-if [ -f "$ORIG" ]; then
-  cp "$ORIG" /workspace/CLAUDE.md.original
+if [ -f /workspace/CLAUDE.md ]; then
+    mv /workspace/CLAUDE.md /workspace/CLAUDE.md.original
+    cat /tmp/coo-handoff.md > /workspace/CLAUDE.md
+    printf '\n---\n\n> **Note: Historical Reference Only** — The following is the original CLAUDE.md from the repository.\n\n' >> /workspace/CLAUDE.md
+    cat /workspace/CLAUDE.md.original >> /workspace/CLAUDE.md
+else
+    cat /tmp/coo-handoff.md > /workspace/CLAUDE.md
 fi
-cat > /workspace/CLAUDE.md << 'HANDOFF_EOF'
-%s
-HANDOFF_EOF
-if [ -f /workspace/CLAUDE.md.original ]; then
-  printf '\n\n---\n\n> **Historical Reference Only** — The section below is the original CLAUDE.md preserved for context. The section above supersedes it.\n\n' >> /workspace/CLAUDE.md
-  cat /workspace/CLAUDE.md.original >> /workspace/CLAUDE.md
-fi
-`, header)
-
-	args := inj.kubectlArgs([]string{
-		"exec", podName,
-		"-n", inj.namespace,
-		"-c", containerName,
-		"--", "bash", "-c", shellCmd,
-	})
-
-	cmd := exec.Command("kubectl", args...)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("inject CLAUDE.md into pod %s: %w\n%s", podName, err, out.String())
+rm -f /tmp/coo-handoff.md
+`
+	mergeArgs := kubectlExecArgs(podName, namespace, kubeconfig, kubeContext,
+		"bash", "-c", mergeScript,
+	)
+	mergeCmd := exec.Command("kubectl", mergeArgs...)
+	if out, err := mergeCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("merge handoff CLAUDE.md in pod: %w\n%s", err, string(out))
 	}
+
 	return nil
 }
 
-// kubectlArgs prepends --kubeconfig / --context flags if set.
-func (inj *Injector) kubectlArgs(args []string) []string {
-	var prefix []string
-	if inj.cfg.Kubeconfig != "" {
-		prefix = append(prefix, "--kubeconfig", inj.cfg.Kubeconfig)
-	}
-	if inj.cfg.KubeContext != "" {
-		prefix = append(prefix, "--context", inj.cfg.KubeContext)
-	}
-	return append(prefix, args...)
-}
+// kubectlExecArgs builds the argument slice for a non-interactive kubectl exec
+// call into the workspace container. Global flags (--kubeconfig, --context) are
+// prepended when set.
+func kubectlExecArgs(podName, namespace, kubeconfig, kubeContext string, command ...string) []string {
+	args := []string{"exec", "-i", podName, "-n", namespace, "-c", workspaceContainer, "--"}
+	args = append(args, command...)
 
-// buildDynamicClient constructs a dynamic Kubernetes client from the given config.
-func buildDynamicClient(cfg ClientConfig) (dynamic.Interface, error) {
-	restCfg, err := buildRESTConfig(cfg)
-	if err != nil {
-		return nil, err
+	// Prepend global flags so they appear before the subcommand.
+	if kubeconfig != "" {
+		args = append([]string{"--kubeconfig", kubeconfig}, args...)
 	}
-	return dynamic.NewForConfig(restCfg)
-}
+	if kubeContext != "" {
+		args = append([]string{"--context", kubeContext}, args...)
+	}
 
-// buildRESTConfig builds a *rest.Config honouring kubeconfig / context overrides.
-func buildRESTConfig(cfg ClientConfig) (*rest.Config, error) {
-	rules := clientcmd.NewDefaultClientConfigLoadingRules()
-	if cfg.Kubeconfig != "" {
-		rules.ExplicitPath = cfg.Kubeconfig
-	}
-	overrides := &clientcmd.ConfigOverrides{}
-	if cfg.KubeContext != "" {
-		overrides.CurrentContext = cfg.KubeContext
-	}
-	restCfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides).ClientConfig()
-	if err != nil {
-		return nil, fmt.Errorf("load kubeconfig: %w", err)
-	}
-	return restCfg, nil
+	return args
 }
