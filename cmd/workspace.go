@@ -1,6 +1,14 @@
 package cmd
 
 import (
+	"bufio"
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"text/tabwriter"
+
+	"github.com/bobbydeveaux/coo-cli/internal/runtime"
 	"github.com/spf13/cobra"
 )
 
@@ -31,22 +39,117 @@ COO context injected into the workspace CLAUDE.md.`,
 
   # Handoff — auto-detects repo from COOConcept
   coo workspace create --concept my-concept`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		// TODO: implement
-		cmd.Println("workspace create — not yet implemented")
-		return nil
-	},
+	RunE: runWorkspaceCreate,
+}
+
+// runWorkspaceCreate implements the workspace create command.
+// It lists existing workspaces and prompts the user to resume one before
+// proceeding with creating a new workspace.
+func runWorkspaceCreate(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	rt, err := detectRuntime(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Step 1: List existing non-terminated workspaces.
+	existing, err := rt.ListWorkspaces(ctx)
+	if err != nil {
+		// Non-fatal — if listing fails, proceed with create.
+		fmt.Fprintf(os.Stderr, "Warning: could not list existing workspaces: %v\n", err)
+		existing = nil
+	}
+
+	// Step 2: If there are existing workspaces, prompt the user.
+	if len(existing) > 0 {
+		fmt.Println("Existing workspaces:")
+		printWorkspacesTable(existing)
+		fmt.Println()
+		fmt.Print("Enter a workspace name to resume it, or press Enter to create a new one: ")
+
+		reader := bufio.NewReader(os.Stdin)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("read input: %w", err)
+		}
+		name := strings.TrimSpace(line)
+
+		if name != "" {
+			// Validate that the entered name exists.
+			for _, ws := range existing {
+				if ws.Name == name {
+					fmt.Printf("Resuming workspace %s...\n", name)
+					if err := rt.ResumeWorkspace(ctx, name); err != nil {
+						return fmt.Errorf("resume workspace %s: %w", name, err)
+					}
+					fmt.Printf("Resume this session: coo workspace resume %s\n", name)
+					return nil
+				}
+			}
+			return fmt.Errorf("workspace %q not found; run 'coo workspace list' to see available workspaces", name)
+		}
+		// Empty input: fall through to create a new workspace.
+		fmt.Println("Creating new workspace...")
+	}
+
+	// Step 3: Gather create options from flags.
+	repo, _ := cmd.Flags().GetString("repo")
+	concept, _ := cmd.Flags().GetString("concept")
+	model, _ := cmd.Flags().GetString("model")
+	ttl, _ := cmd.Flags().GetString("ttl")
+	image, _ := cmd.Flags().GetString("image")
+	token, _ := cmd.Flags().GetString("token")
+	githubToken, _ := cmd.Flags().GetString("github-token")
+
+	if repo == "" && concept == "" {
+		return fmt.Errorf("one of --repo or --concept is required")
+	}
+
+	opts := runtime.CreateOptions{
+		Repo:        repo,
+		Concept:     concept,
+		Model:       model,
+		TTL:         ttl,
+		Image:       image,
+		Token:       token,
+		GithubToken: githubToken,
+	}
+
+	if err := rt.CreateWorkspace(ctx, opts); err != nil {
+		return err
+	}
+	return nil
 }
 
 var workspaceListCmd = &cobra.Command{
 	Use:     "list",
 	Short:   "List active workspaces",
 	Aliases: []string{"ls"},
-	RunE: func(cmd *cobra.Command, args []string) error {
-		// TODO: implement
-		cmd.Println("workspace list — not yet implemented")
+	RunE:    runWorkspaceList,
+}
+
+// runWorkspaceList implements the workspace list command.
+func runWorkspaceList(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	rt, err := detectRuntime(ctx)
+	if err != nil {
+		return err
+	}
+
+	workspaces, err := rt.ListWorkspaces(ctx)
+	if err != nil {
+		return fmt.Errorf("list workspaces: %w", err)
+	}
+
+	if len(workspaces) == 0 {
+		fmt.Println("No active workspaces.")
 		return nil
-	},
+	}
+
+	printWorkspacesTable(workspaces)
+	return nil
 }
 
 var workspaceExecCmd = &cobra.Command{
@@ -91,4 +194,30 @@ func init() {
 	workspaceCreateCmd.Flags().String("image", "", "Worker image override (default: ghcr.io/bobbydeveaux/code-orchestrator-operator/coo-worker-claude:latest)")
 	workspaceCreateCmd.Flags().String("token", "", "Claude Code OAuth token (default: $CLAUDE_CODE_OAUTH_TOKEN)")
 	workspaceCreateCmd.Flags().String("github-token", "", "GitHub token for private repos (default: $GITHUB_TOKEN)")
+}
+
+// detectRuntime builds the runtime.Config from global flags and calls runtime.Detect.
+func detectRuntime(ctx context.Context) (runtime.Runtime, error) {
+	cfg := runtime.Config{
+		LocalMode:   localMode,
+		Kubeconfig:  kubeconfig,
+		KubeContext: kubecontext,
+		Namespace:   namespace,
+	}
+	rt, err := runtime.Detect(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("detect runtime: %w", err)
+	}
+	return rt, nil
+}
+
+// printWorkspacesTable writes a formatted table of workspaces to stdout.
+func printWorkspacesTable(workspaces []runtime.WorkspaceInfo) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "NAME\tMODE\tPHASE\tPOD\tTTL\tREPO")
+	for _, ws := range workspaces {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			ws.Name, ws.Mode, ws.Phase, ws.PodName, ws.TTLExpiry, ws.Repo)
+	}
+	w.Flush()
 }
