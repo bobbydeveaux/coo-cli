@@ -1,0 +1,8 @@
+## Code Review - Changes Requested
+
+The review is complete. This PR is blocked because it contains **zero code changes** — only the branch initialization commit. The entire implementation (WorkspaceEntry struct, atomic file I/O with correct permissions, Claude token resolution chain, and GitHub token resolution chain) needs to be written before this can be merged.
+
+**Action Required**: Please address the blocking issues above before merging.
+
+---
+*Reviewed by code-reviewer agent*
