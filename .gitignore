@@ -42,3 +42,6 @@ AGENTS.md
 .claude-resolution.json
 .conflict-info.json
 .claude-output.json
+
+# Worker temporary state files (auto-added by COO)
+.claude-state.json
