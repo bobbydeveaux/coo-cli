@@ -96,36 +96,48 @@ func runWorkspaceList(cmd *cobra.Command, args []string) error {
 }
 
 var workspaceExecCmd = &cobra.Command{
-	Use:   "exec <name>",
-	Short: "Exec into an existing workspace",
-	Args:  cobra.ExactArgs(1),
+	Use:          "exec <name>",
+	Short:        "Exec into an existing workspace",
+	Args:         cobra.ExactArgs(1),
+	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// TODO: implement
-		cmd.Printf("workspace exec %s — not yet implemented\n", args[0])
-		return nil
+		return workspace.Exec(cmd.Context(), args[0], workspace.ExecConfig{
+			Kubeconfig:  kubeconfig,
+			KubeContext: kubecontext,
+			Namespace:   namespace,
+			LocalMode:   localMode,
+		})
 	},
 }
 
 var workspaceResumeCmd = &cobra.Command{
-	Use:   "resume <name>",
-	Short: "Resume the last Claude Code session in a workspace",
-	Args:  cobra.ExactArgs(1),
+	Use:          "resume <name>",
+	Short:        "Resume the last Claude Code session in a workspace",
+	Args:         cobra.ExactArgs(1),
+	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// TODO: implement
-		cmd.Printf("workspace resume %s — not yet implemented\n", args[0])
-		return nil
+		return workspace.Resume(cmd.Context(), args[0], workspace.ExecConfig{
+			Kubeconfig:  kubeconfig,
+			KubeContext: kubecontext,
+			Namespace:   namespace,
+			LocalMode:   localMode,
+		})
 	},
 }
 
 var workspaceDeleteCmd = &cobra.Command{
-	Use:     "delete <name>",
-	Short:   "Delete a workspace",
-	Aliases: []string{"rm"},
-	Args:    cobra.ExactArgs(1),
+	Use:          "delete <name>",
+	Short:        "Delete a workspace",
+	Aliases:      []string{"rm"},
+	Args:         cobra.ExactArgs(1),
+	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// TODO: implement
-		cmd.Printf("workspace delete %s — not yet implemented\n", args[0])
-		return nil
+		return workspace.Delete(cmd.Context(), args[0], workspace.DeleteConfig{
+			Kubeconfig:  kubeconfig,
+			KubeContext: kubecontext,
+			Namespace:   namespace,
+			LocalMode:   localMode,
+		})
 	},
 }
 
